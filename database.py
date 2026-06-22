@@ -382,15 +382,15 @@ async def insert_send_fail_log(phone: str, tg_account_id: int, user_id: int,
 # =============================================================================
 
 async def get_pending_contacts_by_node(node_id: str) -> list[dict]:
-    """Get pending contacts to add for this node."""
+    """Get pending contacts to add for this node from tg_contact_assign_log."""
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
                 """SELECT ca.*, ta.phone as account_phone
                    FROM tg_contact_assign_log ca
-                   JOIN tg_telethon_account ta ON COALESCE(ca.account_id, ca.tg_account_id) = ta.id
-                   WHERE ta.node_id = %s AND ca.status = 'pending'
-                   ORDER BY ta.id, ca.create_time""",
+                   JOIN tg_telethon_account ta ON ca.account_id = ta.id
+                   WHERE ca.node_id = %s AND ca.status = 'pending'
+                   ORDER BY ca.account_id, ca.create_time""",
                 (node_id,),
             )
             return await cur.fetchall()
