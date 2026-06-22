@@ -106,7 +106,6 @@ async def _restart_login():
                 online_count = sum(1 for r in results if r.get("success"))
                 await notify.send_notification(
                     "节点重启登录完成",
-                    f"{node_manager.get_node_info_str()}\n"
                     f"重新登录: {online_count}/{len(to_login)} 个在线"
                 )
             else:

@@ -189,7 +189,6 @@ async def _process_pending_logins():
         total_online = len(active_clients)
         await notify.send_notification(
             "登录完成",
-            f"{node_manager.get_node_info_str()}\n"
             f"本次登录: {online_count}/{len(results)} 成功\n"
             f"节点在线总数: {total_online}"
         )
