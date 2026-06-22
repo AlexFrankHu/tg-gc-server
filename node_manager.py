@@ -158,17 +158,17 @@ async def _update_heartbeat():
             async with conn.cursor() as cur:
                 # Count total accounts assigned to this node
                 await cur.execute(
-                    "SELECT COUNT(*) FROM tg_telethon_account WHERE node_id = %s AND is_deleted = 0",
+                    "SELECT COUNT(*) AS cnt FROM tg_telethon_account WHERE node_id = %s AND is_deleted = 0",
                     (NODE_ID,),
                 )
-                total = (await cur.fetchone())[0]
+                total = (await cur.fetchone())["cnt"]
 
                 # Count online accounts
                 await cur.execute(
-                    "SELECT COUNT(*) FROM tg_telethon_account WHERE node_id = %s AND status = 'online'",
+                    "SELECT COUNT(*) AS cnt FROM tg_telethon_account WHERE node_id = %s AND status = 'online'",
                     (NODE_ID,),
                 )
-                online = (await cur.fetchone())[0]
+                online = (await cur.fetchone())["cnt"]
 
                 await cur.execute(
                     """UPDATE tg_cluster_node SET

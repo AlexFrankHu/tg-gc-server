@@ -746,7 +746,7 @@ async def _check_and_restrict_account(phone, account_id):
                     (phone,)
                 )
                 row = await cur.fetchone()
-                fail_count = row[0] if row else 0
+                fail_count = row["cnt"] if row else 0
                 if fail_count >= 3:
                     await cur.execute(
                         "UPDATE tg_telethon_account SET is_restricted = 1, status = 'restricted', update_time = NOW() WHERE id = %s",
@@ -901,12 +901,12 @@ async def _get_outgoing_message_count(account_id: int, chat_id: int) -> int:
     async with database.pool.acquire() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
-                "SELECT COUNT(*) FROM tg_chat_message "
+                "SELECT COUNT(*) AS cnt FROM tg_chat_message "
                 "WHERE tg_account_id = %s AND chat_id = %s AND is_outgoing = 1",
                 (account_id, chat_id),
             )
             row = await cur.fetchone()
-            return row[0] if row else 0
+            return row["cnt"] if row else 0
 
 
 async def _get_last_messages(account_id: int, chat_id: int, limit: int = 5) -> list:
@@ -978,12 +978,12 @@ async def _get_friend_sent_count(account_id: int, user_id: int) -> int:
         async with database.pool.acquire() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
-                    "SELECT COUNT(*) FROM tg_chat_message "
+                    "SELECT COUNT(*) AS cnt FROM tg_chat_message "
                     "WHERE tg_account_id = %s AND chat_id = %s AND is_outgoing = 0",
                     (account_id, user_id),
                 )
                 row = await cur.fetchone()
-                return row[0] if row else 0
+                return row["cnt"] if row else 0
     except Exception as e:
         logger.error(f"[AutoReply] 获取好友发送消息数失败: {e}")
         return 0
