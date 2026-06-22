@@ -73,53 +73,86 @@ async def lifespan(app: FastAPI):
 
 
 async def _restart_login():
-    """On restart, re-login accounts that were online before for this node."""
-    try:
-        # Write restart logout logs for accounts that were online
-        accounts = await database.get_accounts_by_node_and_status(
-            node_manager.NODE_ID, "online"
-        )
-        if accounts:
-            logger.info(f"Restart: found {len(accounts)} previously online accounts")
-            for acc in accounts:
-                await database.insert_login_log(
-                    phone=acc["phone"],
-                    result="logout",
-                    reason="服务重启",
-                    tg_user_id=acc.get("tg_user_id"),
-                    nickname=acc.get("nickname"),
-                    proxy_info=acc.get("proxy_url"),
-                    node_id=node_manager.NODE_ID,
-                )
+    """On restart, re-login accounts that were online before for this node.
 
-            # Filter: skip restricted, skip those without proxy
-            to_login = [
-                a for a in accounts
-                if not a.get("is_restricted")
-                and a.get("proxy_url")
-            ]
-            if to_login:
-                logger.info(f"Restart: will re-login {len(to_login)} accounts (skipped restricted/no-proxy)")
-                results = await client_manager.concurrent_login_accounts(
-                    to_login, use_proxy=True
-                )
-                online_count = sum(1 for r in results if r.get("success"))
-                await notify.send_notification(
-                    "节点重启登录完成",
-                    f"重新登录: {online_count}/{len(to_login)} 个在线"
-                )
-            else:
-                logger.info("Restart: no accounts eligible for re-login")
-                await notify.send_notification(
-                    "节点重启登录完成",
-                    f"历史在线账号: {len(accounts)} 个\n符合登录条件: 0 个（受限或无代理）"
-                )
-        else:
+    Rules:
+    1. No proxy → set offline, do not login
+    2. Has proxy → attempt login; success keeps online, failure sets offline
+    Both cases also sync status to tg_import_account.
+    """
+    try:
+        node_id = node_manager.NODE_ID
+        accounts = await database.get_accounts_by_node_and_status(node_id, "online")
+        if not accounts:
             logger.info("Restart: no previously online accounts")
             await notify.send_notification(
                 "节点重启完成",
                 "无历史在线账号，无需重新登录"
             )
+            return
+
+        logger.info(f"Restart: found {len(accounts)} previously online accounts")
+
+        # Write restart logout logs
+        for acc in accounts:
+            await database.insert_login_log(
+                phone=acc["phone"],
+                result="logout",
+                reason="服务重启",
+                tg_user_id=acc.get("tg_user_id"),
+                nickname=acc.get("nickname"),
+                proxy_info=acc.get("proxy_url"),
+                node_id=node_id,
+            )
+
+        # Separate: no-proxy accounts vs has-proxy accounts
+        no_proxy_accounts = []
+        to_login = []
+        for a in accounts:
+            if a.get("proxy_url"):
+                to_login.append(a)
+            else:
+                no_proxy_accounts.append(a)
+
+        # 1. No proxy → set offline immediately
+        for acc in no_proxy_accounts:
+            await database.update_account_status(acc["phone"], "offline")
+            await database.insert_login_log(
+                phone=acc["phone"],
+                result="failed",
+                reason="无代理信息，设为离线",
+                tg_user_id=acc.get("tg_user_id"),
+                nickname=acc.get("nickname"),
+                node_id=node_id,
+            )
+            logger.info(f"[{acc['phone']}] Restart: no proxy, set offline")
+
+        # 2. Has proxy → attempt login
+        online_count = 0
+        fail_count = 0
+        if to_login:
+            logger.info(f"Restart: will re-login {len(to_login)} accounts with proxy")
+            results = await client_manager.concurrent_login_accounts(
+                to_login, use_proxy=True
+            )
+            for r in results:
+                if r.get("success"):
+                    online_count += 1
+                else:
+                    fail_count += 1
+                    # Login failed → set offline
+                    await database.update_account_status(r["phone"], "offline")
+                    logger.info(f"[{r['phone']}] Restart login failed, set offline: {r.get('error', '')}")
+
+        # Send notification
+        msg_lines = [f"历史在线: {len(accounts)} 个"]
+        if no_proxy_accounts:
+            msg_lines.append(f"无代理已离线: {len(no_proxy_accounts)} 个")
+        if to_login:
+            msg_lines.append(f"尝试登录: {len(to_login)} 个")
+            msg_lines.append(f"登录成功: {online_count} 个, 失败离线: {fail_count} 个")
+        await notify.send_notification("节点重启登录完成", "\n".join(msg_lines))
+
     except Exception as e:
         logger.error(f"Restart login error: {e}")
 

@@ -100,11 +100,15 @@ async def get_account_by_id(account_id: int) -> dict | None:
 
 
 async def update_account_status(phone: str, status: str):
-    """Update account status."""
+    """Update account status in tg_telethon_account and tg_import_account."""
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
                 "UPDATE tg_telethon_account SET status = %s, update_time = NOW() WHERE phone = %s",
+                (status, phone),
+            )
+            await cur.execute(
+                "UPDATE tg_import_account SET status = %s, update_time = NOW() WHERE phone = %s",
                 (status, phone),
             )
 
