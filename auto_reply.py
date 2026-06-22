@@ -989,6 +989,23 @@ async def _get_friend_sent_count(account_id: int, user_id: int) -> int:
         return 0
 
 
+async def _download_image_from_backend(image_path: str, local_path: str):
+    """Download image from Java backend via internal network."""
+    try:
+        url = f"http://{config.DB_HOST}:8809{image_path}"
+        os.makedirs(os.path.dirname(local_path), exist_ok=True)
+        async with httpx.AsyncClient(timeout=30) as http_client:
+            resp = await http_client.get(url)
+            if resp.status_code == 200:
+                with open(local_path, "wb") as f:
+                    f.write(resp.content)
+                logger.info(f"[AutoReply] 从后台下载图片成功: {url} -> {local_path}")
+            else:
+                logger.warning(f"[AutoReply] 从后台下载图片失败: {url}, status={resp.status_code}")
+    except Exception as e:
+        logger.error(f"[AutoReply] 下载图片异常: {image_path}, error={e}")
+
+
 async def _send_greeting_reply(client, phone: str, account_id: int, user_id: int, greeting: dict):
     """Send a greeting (from tg_greeting) as a reply. Supports image+caption.
     Saves chat records (split text + photo if both exist) and updates last_send_time."""
@@ -1004,6 +1021,9 @@ async def _send_greeting_reply(client, phone: str, account_id: int, user_id: int
 
     if image_path:
         actual_path = os.path.join(config.DATA_DIR, "uploadPath") + image_path.replace("/profile", "", 1)
+        # If file not local, download from backend via internal network
+        if not os.path.exists(actual_path):
+            await _download_image_from_backend(image_path, actual_path)
         if os.path.exists(actual_path):
             sent_msg = await client.send_file(user_id, actual_path, caption=content or '')
             has_image = True
