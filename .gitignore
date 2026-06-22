@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+*.pyo
+.env
+*.session
+account/waitLogin/*
+account/loginSuccess/*
+account/loginFailed/*
+!account/waitLogin/.gitkeep
+!account/loginSuccess/.gitkeep
+!account/loginFailed/.gitkeep
+logs/*.log
+bin/app.pid
+venv/
+.venv/
