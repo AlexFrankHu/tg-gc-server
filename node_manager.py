@@ -126,15 +126,16 @@ async def _register_node():
         async with conn.cursor() as cur:
             await cur.execute(
                 """INSERT INTO tg_cluster_node
-                   (node_id, public_ip, private_ip, node_dir, last_active_time,
+                   (node_id, public_ip, private_ip, node_dir, node_port, last_active_time,
                     total_account_count, online_account_count)
-                   VALUES (%s, %s, %s, %s, NOW(), 0, 0)
+                   VALUES (%s, %s, %s, %s, %s, NOW(), 0, 0)
                    ON DUPLICATE KEY UPDATE
                        public_ip = VALUES(public_ip),
                        private_ip = VALUES(private_ip),
                        node_dir = VALUES(node_dir),
+                       node_port = VALUES(node_port),
                        last_active_time = NOW()""",
-                (NODE_ID, PUBLIC_IP, PRIVATE_IP, NODE_DIR),
+                (NODE_ID, PUBLIC_IP, PRIVATE_IP, NODE_DIR, config.PORT),
             )
             await conn.commit()
 
