@@ -1,26 +1,26 @@
-"""Telegram Bot notification module."""
+"""Telegram bot notification - includes node info in all messages."""
+import logging
 import httpx
 import config
-import logging
 
 logger = logging.getLogger(__name__)
 
 
 async def send_notification(title: str, content: str):
-    """Send notification via Telegram Bot API."""
-    text = f"<b>{title}</b>\n{content}"
+    """Send a Telegram bot notification with node info."""
+    import node_manager
+    node_info = node_manager.get_node_info_str()
+    text = f"📢 {title}\n{node_info}\n{content}"
+
     url = f"https://api.telegram.org/bot{config.BOT_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": config.BOT_CHAT_ID,
-        "text": text,
-        "parse_mode": "HTML",
-    }
     try:
         async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.post(url, json=payload)
-            if resp.status_code == 200:
-                logger.info(f"Notification sent: {title}")
-            else:
-                logger.warning(f"Notification failed: {resp.status_code} {resp.text}")
+            resp = await client.post(url, json={
+                "chat_id": config.BOT_CHAT_ID,
+                "text": text,
+                "parse_mode": "HTML",
+            })
+            if resp.status_code != 200:
+                logger.warning(f"TG notify failed: {resp.status_code} {resp.text}")
     except Exception as e:
-        logger.error(f"Notification error: {e}")
+        logger.error(f"TG notify error: {e}")

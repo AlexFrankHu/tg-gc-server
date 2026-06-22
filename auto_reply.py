@@ -21,6 +21,7 @@ import config
 from config import to_beijing
 import database
 import client_manager
+import node_manager
 
 logger = logging.getLogger(__name__)
 
@@ -122,7 +123,7 @@ async def handle_incoming_message(phone: str, event, client):
                         friend_phone=friend_phone_num, trigger_type='incoming',
                         state=0, request_params=f'好友消息数={friend_msg_count}<=1, 发送广告问候语',
                         chat_context='', reply_content=reply_desc,
-                        send_result='success')
+                        send_result='success', node_id=node_manager.NODE_ID)
                 except Exception as send_err:
                     logger.error(f"[{phone}] [AutoReply] 广告问候语发送失败: user_id={user_id}, error={send_err}")
                     await database.insert_auto_reply_log(
@@ -131,7 +132,7 @@ async def handle_incoming_message(phone: str, event, client):
                         friend_phone=friend_phone_num, trigger_type='incoming',
                         state=0, request_params=f'好友消息数={friend_msg_count}<=1, 发送广告问候语',
                         chat_context='', reply_content=greeting.get('content', ''),
-                        send_result='failed', error_reason=str(send_err))
+                        send_result='failed', error_reason=str(send_err), node_id=node_manager.NODE_ID)
                     if 'PRIVACY_PREMIUM_REQUIRED' in str(send_err):
                         await _disable_contact_auto_reply(account_id, user_id, phone)
                     raise
@@ -143,7 +144,7 @@ async def handle_incoming_message(phone: str, event, client):
                     friend_phone=friend_phone_num, trigger_type='incoming',
                     state=0, request_params=f'好友消息数={friend_msg_count}<=1, 发送广告问候语',
                     chat_context='', reply_content=None,
-                    send_result='no_reply', error_reason='无有效广告问候语')
+                    send_result='no_reply', error_reason='无有效广告问候语', node_id=node_manager.NODE_ID)
         else:
             # Friend sent > 1 message: call auto-reply API
             chat_context = await _build_chat_context(account_id, user_id, account_tg_id, friend_tg_id)
@@ -169,7 +170,7 @@ async def handle_incoming_message(phone: str, event, client):
                         friend_phone=friend_phone_num, trigger_type='incoming',
                         state=0, request_params=request_params_str,
                         chat_context=chat_context, reply_content=reply,
-                        send_result='success')
+                        send_result='success', node_id=node_manager.NODE_ID)
                 except Exception as send_err:
                     logger.error(f"[{phone}] [AutoReply] 发送消息失败: user_id={user_id}, error={send_err}")
                     await database.insert_auto_reply_log(
@@ -178,7 +179,7 @@ async def handle_incoming_message(phone: str, event, client):
                         friend_phone=friend_phone_num, trigger_type='incoming',
                         state=0, request_params=request_params_str,
                         chat_context=chat_context, reply_content=reply,
-                        send_result='failed', error_reason=str(send_err))
+                        send_result='failed', error_reason=str(send_err), node_id=node_manager.NODE_ID)
                     if 'PRIVACY_PREMIUM_REQUIRED' in str(send_err):
                         await _disable_contact_auto_reply(account_id, user_id, phone)
                     raise
@@ -191,7 +192,7 @@ async def handle_incoming_message(phone: str, event, client):
                     friend_phone=friend_phone_num, trigger_type='incoming',
                     state=0, request_params=request_params_str,
                     chat_context=chat_context, reply_content=None,
-                    send_result=result_type, error_reason=api_error)
+                    send_result=result_type, error_reason=api_error, node_id=node_manager.NODE_ID)
     except FloodWaitError as e:
         logger.warning(f"[{phone}] [AutoReply] FloodWait: 需要等待{e.seconds}s后再发消息")
         await asyncio.sleep(e.seconds + 5)
@@ -269,7 +270,7 @@ async def _process_proactive_replies():
                                 friend_phone=friend_phone_num, trigger_type='polling',
                                 state=state, request_params='state=0, 好友消息数<=1, 发送广告问候语',
                                 chat_context='', reply_content=reply_desc,
-                                send_result='success')
+                                send_result='success', node_id=node_manager.NODE_ID)
                         except Exception as send_err:
                             logger.error(f"[{phone}] 广告问候语发送失败(polling): user_id={user_id}, error={send_err}")
                             await database.insert_auto_reply_log(
@@ -278,7 +279,7 @@ async def _process_proactive_replies():
                                 friend_phone=friend_phone_num, trigger_type='polling',
                                 state=state, request_params='state=0, 好友消息数<=1, 发送广告问候语',
                                 chat_context='', reply_content=greeting.get('content', ''),
-                                send_result='failed', error_reason=str(send_err))
+                                send_result='failed', error_reason=str(send_err), node_id=node_manager.NODE_ID)
                             if 'PRIVACY_PREMIUM_REQUIRED' in str(send_err):
                                 await _disable_contact_auto_reply(account_id, user_id, phone)
                             raise
@@ -290,7 +291,7 @@ async def _process_proactive_replies():
                             friend_phone=friend_phone_num, trigger_type='polling',
                             state=state, request_params='state=0, 好友消息数<=1, 发送广告问候语',
                             chat_context='', reply_content=None,
-                            send_result='no_reply', error_reason='无有效广告问候语')
+                            send_result='no_reply', error_reason='无有效广告问候语', node_id=node_manager.NODE_ID)
                 else:
                     # Friend sent > 1 message: call auto-reply API
                     chat_context = await _build_chat_context(account_id, user_id, account_tg_id, friend_tg_id)
@@ -313,7 +314,7 @@ async def _process_proactive_replies():
                                 friend_phone=friend_phone_num, trigger_type='polling',
                                 state=state, request_params=request_params_str,
                                 chat_context=chat_context, reply_content=reply,
-                                send_result='success')
+                                send_result='success', node_id=node_manager.NODE_ID)
                         except Exception as send_err:
                             logger.error(f"[{phone}] 发送失败(polling state=0): user_id={user_id}, error={send_err}")
                             await database.insert_auto_reply_log(
@@ -322,7 +323,7 @@ async def _process_proactive_replies():
                                 friend_phone=friend_phone_num, trigger_type='polling',
                                 state=state, request_params=request_params_str,
                                 chat_context=chat_context, reply_content=reply,
-                                send_result='failed', error_reason=str(send_err))
+                                send_result='failed', error_reason=str(send_err), node_id=node_manager.NODE_ID)
                             if 'PRIVACY_PREMIUM_REQUIRED' in str(send_err):
                                 await _disable_contact_auto_reply(account_id, user_id, phone)
                             raise
@@ -334,7 +335,7 @@ async def _process_proactive_replies():
                             friend_phone=friend_phone_num, trigger_type='polling',
                             state=state, request_params=request_params_str,
                             chat_context=chat_context, reply_content=None,
-                            send_result=result_type, error_reason=api_error)
+                            send_result=result_type, error_reason=api_error, node_id=node_manager.NODE_ID)
             elif state == 1:
                 # state=1: send random opening from tg_opening instead of calling API
                 opening = await _get_random_opening()
@@ -351,7 +352,7 @@ async def _process_proactive_replies():
                             friend_phone=friend_phone_num, trigger_type='polling',
                             state=state, request_params='state=1, 随机主动开场白',
                             chat_context='', reply_content=opening_content,
-                            send_result='success')
+                            send_result='success', node_id=node_manager.NODE_ID)
                     except Exception as send_err:
                         logger.error(f"[{phone}] 主动开场白发送失败: user_id={user_id}, error={send_err}")
                         await database.insert_auto_reply_log(
@@ -360,7 +361,7 @@ async def _process_proactive_replies():
                             friend_phone=friend_phone_num, trigger_type='polling',
                             state=state, request_params='state=1, 随机主动开场白',
                             chat_context='', reply_content=opening_content,
-                            send_result='failed', error_reason=str(send_err))
+                            send_result='failed', error_reason=str(send_err), node_id=node_manager.NODE_ID)
                         if 'PRIVACY_PREMIUM_REQUIRED' in str(send_err):
                             await _disable_contact_auto_reply(account_id, user_id, phone)
                         raise
@@ -372,7 +373,7 @@ async def _process_proactive_replies():
                         friend_phone=friend_phone_num, trigger_type='polling',
                         state=state, request_params='state=1, 随机主动开场白',
                         chat_context='', reply_content=None,
-                        send_result='no_reply', error_reason='无有效主动开场白')
+                        send_result='no_reply', error_reason='无有效主动开场白', node_id=node_manager.NODE_ID)
             else:
                 # state>=2: call auto-reply API
                 chat_context = await _build_chat_context(account_id, user_id, account_tg_id, friend_tg_id)
@@ -397,7 +398,7 @@ async def _process_proactive_replies():
                             friend_phone=friend_phone_num, trigger_type='polling',
                             state=state, request_params=request_params_str,
                             chat_context=chat_context, reply_content=reply,
-                            send_result='success')
+                            send_result='success', node_id=node_manager.NODE_ID)
                     except Exception as send_err:
                         logger.error(f"[{phone}] 发送失败: user_id={user_id}, error={send_err}")
                         await database.insert_auto_reply_log(
@@ -406,7 +407,7 @@ async def _process_proactive_replies():
                             friend_phone=friend_phone_num, trigger_type='polling',
                             state=state, request_params=request_params_str,
                             chat_context=chat_context, reply_content=reply,
-                            send_result='failed', error_reason=str(send_err))
+                            send_result='failed', error_reason=str(send_err), node_id=node_manager.NODE_ID)
                         if 'PRIVACY_PREMIUM_REQUIRED' in str(send_err):
                             await _disable_contact_auto_reply(account_id, user_id, phone)
                         raise
@@ -418,7 +419,7 @@ async def _process_proactive_replies():
                         friend_phone=friend_phone_num, trigger_type='polling',
                         state=state, request_params=request_params_str,
                         chat_context=chat_context, reply_content=None,
-                        send_result=result_type, error_reason=api_error)
+                        send_result=result_type, error_reason=api_error, node_id=node_manager.NODE_ID)
         except FloodWaitError as e:
             logger.warning(f"[{phone}] FloodWait: need to wait {e.seconds}s, pausing...")
             await asyncio.sleep(min(e.seconds + 5, 300))  # wait as Telegram requires, cap at 5min
@@ -700,15 +701,13 @@ async def _save_sent_message(phone: str, account_id: int, user_id: int,
                 await cur.execute(
                     """INSERT INTO tg_chat_message
                        (tg_account_id, chat_id, message_id, sender_user_id,
-                        is_outgoing, send_time, content_type, text_content, create_time)
-                       VALUES (%s, %s, %s, %s, 1, %s, %s, %s, NOW())
+                        is_outgoing, send_time, content_type, text_content, node_id, create_time)
+                       VALUES (%s, %s, %s, %s, 1, %s, %s, %s, %s, NOW())
                        ON DUPLICATE KEY UPDATE text_content = VALUES(text_content)""",
                     (account_id, user_id, sent_msg.id, None,
-                     send_time, content_type, content),
+                     send_time, content_type, content, node_manager.NODE_ID),
                 )
         logger.info(f"[{phone}] [AutoReply] 消息已录入数据库: msg_id={sent_msg.id}, type={content_type}")
-        await database.increment_msg_count(account_id, is_outgoing=True)
-        await database.increment_contact_msg_count(account_id, user_id, is_outgoing=True)
     except Exception as e:
         logger.error(f"[{phone}] [AutoReply] 录入消息到数据库失败: {e}")
 
@@ -720,11 +719,12 @@ async def _write_send_fail_log(phone, account_id, my_nickname, user_id,
     If the account has 3+ FloodWait failures, mark it as restricted."""
     try:
         await database.insert_send_fail_log(
-            phone=phone, tg_account_id=account_id, nickname=my_nickname,
-            user_id=user_id, friend_nickname=friend_nickname,
-            friend_phone=friend_phone, content_type=content_type,
+            phone=phone, tg_account_id=account_id,
+            user_id=user_id,
+            content_type=content_type,
             content=content[:500] if content else None,
-            error_reason=error_reason[:500] if error_reason else None
+            error_reason=error_reason[:500] if error_reason else None,
+            node_id=node_manager.NODE_ID
         )
         logger.info(f"[{phone}] [AutoReply] 发送失败日志已写入: user_id={user_id}")
         # Check if account should be marked as restricted
@@ -861,9 +861,10 @@ async def _get_contact(account_id: int, user_id: int):
 
 
 async def _get_eligible_contacts() -> list:
-    """Contacts eligible for proactive auto-reply polling."""
+    """Contacts eligible for proactive auto-reply polling (scoped to this node)."""
     placeholders = ','.join(['%s'] * len(OFFICIAL_IDS)) if OFFICIAL_IDS else '0'
     params = list(OFFICIAL_IDS) if OFFICIAL_IDS else []
+    params.append(node_manager.NODE_ID)
 
     sql = f"""
         SELECT c.*,
@@ -878,6 +879,7 @@ async def _get_eligible_contacts() -> list:
           AND c.user_id NOT IN ({placeholders})
           AND a.auto_reply = 1
           AND a.status = 'online'
+          AND a.node_id = %s
           AND (a.is_deleted = 0 OR a.is_deleted IS NULL)
           AND (a.is_restricted = 0 OR a.is_restricted IS NULL)
           AND (
@@ -1001,7 +1003,7 @@ async def _send_greeting_reply(client, phone: str, account_id: int, user_id: int
     has_image = False
 
     if image_path:
-        actual_path = "/home/ubuntu/telegram-project/uploadPath" + image_path.replace("/profile", "", 1)
+        actual_path = os.path.join(config.DATA_DIR, "uploadPath") + image_path.replace("/profile", "", 1)
         if os.path.exists(actual_path):
             sent_msg = await client.send_file(user_id, actual_path, caption=content or '')
             has_image = True
@@ -1028,28 +1030,24 @@ async def _send_greeting_reply(client, phone: str, account_id: int, user_id: int
                 await cur.execute(
                     """INSERT INTO tg_chat_message
                        (tg_account_id, chat_id, message_id, sender_user_id,
-                        is_outgoing, send_time, content_type, text_content, create_time)
-                       VALUES (%s, %s, %s, %s, 1, %s, %s, %s, NOW())
+                        is_outgoing, send_time, content_type, text_content, node_id, create_time)
+                       VALUES (%s, %s, %s, %s, 1, %s, %s, %s, %s, NOW())
                        ON DUPLICATE KEY UPDATE text_content = VALUES(text_content)""",
                     (account_id, user_id, msg_id, None,
-                     send_time, 'text', content),
+                     send_time, 'text', content, node_manager.NODE_ID),
                 )
-                await database.increment_msg_count(account_id, is_outgoing=True)
-                await database.increment_contact_msg_count(account_id, user_id, is_outgoing=True)
 
             if has_image:
                 img_msg_id = msg_id + 100000000 if content else msg_id
                 await cur.execute(
                     """INSERT INTO tg_chat_message
                        (tg_account_id, chat_id, message_id, sender_user_id,
-                        is_outgoing, send_time, content_type, text_content, create_time)
-                       VALUES (%s, %s, %s, %s, 1, %s, %s, %s, NOW())
+                        is_outgoing, send_time, content_type, text_content, node_id, create_time)
+                       VALUES (%s, %s, %s, %s, 1, %s, %s, %s, %s, NOW())
                        ON DUPLICATE KEY UPDATE text_content = VALUES(text_content)""",
                     (account_id, user_id, img_msg_id, None,
-                     send_time, 'photo', image_path),
+                     send_time, 'photo', image_path, node_manager.NODE_ID),
                 )
-                await database.increment_msg_count(account_id, is_outgoing=True)
-                await database.increment_contact_msg_count(account_id, user_id, is_outgoing=True)
 
             # Update last_send_time
             await cur.execute(
