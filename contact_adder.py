@@ -23,6 +23,13 @@ logger = logging.getLogger(__name__)
 CONCURRENCY_LIMIT = 5
 
 
+def _normalize_phone(phone: str) -> str:
+    """Ensure phone number has + prefix."""
+    if phone and not phone.startswith("+"):
+        return "+" + phone
+    return phone
+
+
 async def poll_contact_adder():
     """Background loop: process pending contacts every 15 seconds."""
     while True:
@@ -89,7 +96,7 @@ async def _add_contacts_one_by_one(tg_client, phone: str, account_id: int, items
 
     async def add_single(item):
         async with semaphore:
-            contact_phone = item.get("contact_phone", "")
+            contact_phone = _normalize_phone(item.get("contact_phone", ""))
             contact_username = item.get("contact_username", "")
             try:
                 if contact_phone:
@@ -229,7 +236,7 @@ async def _batch_import_contacts(tg_client, phone: str, account_id: int, items: 
     contacts = []
     item_map = {}
     for i, item in enumerate(phone_items):
-        contact_phone = item["contact_phone"]
+        contact_phone = _normalize_phone(item["contact_phone"])
         contact = InputPhoneContact(
             client_id=i,
             phone=contact_phone,
