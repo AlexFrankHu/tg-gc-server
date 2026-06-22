@@ -110,8 +110,16 @@ async def _restart_login():
                 )
             else:
                 logger.info("Restart: no accounts eligible for re-login")
+                await notify.send_notification(
+                    "节点重启登录完成",
+                    f"历史在线账号: {len(accounts)} 个\n符合登录条件: 0 个（受限或无代理）"
+                )
         else:
             logger.info("Restart: no previously online accounts")
+            await notify.send_notification(
+                "节点重启完成",
+                "无历史在线账号，无需重新登录"
+            )
     except Exception as e:
         logger.error(f"Restart login error: {e}")
 
