@@ -885,6 +885,7 @@ async def _get_eligible_contacts() -> list:
           AND (
               c.last_send_time IS NULL
               OR c.last_receive_time IS NULL
+              OR c.last_send_time < c.last_receive_time
               OR (
                   TIMESTAMPDIFF(HOUR, c.last_send_time, NOW()) < 72
                   AND c.last_send_time > c.last_receive_time
