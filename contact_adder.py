@@ -8,10 +8,11 @@ Concurrent execution with error isolation per contact.
 """
 import asyncio
 import logging
+import random
 from collections import defaultdict
 
-from telethon.tl.functions.contacts import ImportContactsRequest, AddContactRequest
-from telethon.tl.types import InputPhoneContact
+from telethon.tl.functions.contacts import ImportContactsRequest, AddContactRequest, GetContactsRequest
+from telethon.tl.types import InputPhoneContact, InputUser
 
 import config
 import database
@@ -90,7 +91,10 @@ async def _process_account_group(account_id: int, add_method: str, items: list[d
 
 
 async def _add_contacts_one_by_one(tg_client, phone: str, account_id: int, items: list[dict]):
-    """Add contacts one by one using AddContactRequest, concurrently with error isolation."""
+    """Add contacts one by one, concurrently with error isolation.
+    For phone: ImportContactsRequest first, fallback to ResolvePhone/AddContactRequest.
+    For username: get_entity + AddContactRequest.
+    """
     node_id = node_manager.NODE_ID
     semaphore = asyncio.Semaphore(CONCURRENCY_LIMIT)
 
@@ -100,63 +104,9 @@ async def _add_contacts_one_by_one(tg_client, phone: str, account_id: int, items
             contact_username = item.get("contact_username", "")
             try:
                 if contact_phone:
-                    result = await tg_client(AddContactRequest(
-                        id=contact_phone,
-                        first_name=contact_phone,
-                        last_name="",
-                        phone=contact_phone,
-                        add_phone_privacy_exception=True,
-                    ))
-                    if result and result.users:
-                        user = result.users[0]
-                        await database.upsert_contact(
-                            tg_account_id=account_id,
-                            user_id=user.id,
-                            first_name=getattr(user, "first_name", None),
-                            last_name=getattr(user, "last_name", None),
-                            nickname=getattr(user, "first_name", ""),
-                            username=getattr(user, "username", None),
-                            phone_number=contact_phone,
-                            source="import",
-                            node_id=node_id,
-                        )
-                        await database.update_contact_assign_status(
-                            item["id"], "success", result_user_id=user.id
-                        )
-                        logger.info(f"[{phone}] Added contact by phone: {contact_phone} -> {user.id}")
-                    else:
-                        await database.update_contact_assign_status(
-                            item["id"], "failed", error_reason="号码未注册TG"
-                        )
-                        logger.warning(f"[{phone}] AddContact no result for {contact_phone}")
+                    await _add_one_by_phone(tg_client, phone, account_id, node_id, item, contact_phone)
                 elif contact_username:
-                    entity = await tg_client.get_entity(contact_username)
-                    if entity:
-                        result = await tg_client(AddContactRequest(
-                            id=entity,
-                            first_name=getattr(entity, "first_name", "") or contact_username,
-                            last_name=getattr(entity, "last_name", "") or "",
-                            phone="",
-                            add_phone_privacy_exception=True,
-                        ))
-                        await database.upsert_contact(
-                            tg_account_id=account_id,
-                            user_id=entity.id,
-                            first_name=getattr(entity, "first_name", None),
-                            last_name=getattr(entity, "last_name", None),
-                            nickname=getattr(entity, "first_name", ""),
-                            username=getattr(entity, "username", None),
-                            source="import",
-                            node_id=node_id,
-                        )
-                        await database.update_contact_assign_status(
-                            item["id"], "success", result_user_id=entity.id
-                        )
-                        logger.info(f"[{phone}] Added contact by username: {contact_username} -> {entity.id}")
-                    else:
-                        await database.update_contact_assign_status(
-                            item["id"], "failed", error_reason="用户不存在"
-                        )
+                    await _add_one_by_username(tg_client, phone, account_id, node_id, item, contact_username)
                 else:
                     await database.update_contact_assign_status(
                         item["id"], "failed", error_reason="无手机号和用户名"
@@ -172,6 +122,155 @@ async def _add_contacts_one_by_one(tg_client, phone: str, account_id: int, items
     success_count = sum(1 for r in results if r is None)
     fail_count = len(results) - success_count
     logger.info(f"[{phone}] one_by_one: {success_count}/{len(items)} success, {fail_count} failed")
+
+
+async def _add_one_by_phone(tg_client, phone: str, account_id: int, node_id: str,
+                             item: dict, contact_phone: str):
+    """Add a single contact by phone: ImportContactsRequest first, fallback to ResolvePhone."""
+    assign_id = item["id"]
+
+    # Step 1: Check if already a contact
+    try:
+        entity = await tg_client.get_entity(contact_phone)
+        if entity:
+            result = await tg_client(GetContactsRequest(hash=0))
+            phone_clean = contact_phone.replace("+", "")
+            for user in result.users:
+                if user.phone and user.phone.replace("+", "") == phone_clean:
+                    logger.info(f"[{phone}] Already a contact: {contact_phone} -> {user.id}")
+                    await database.upsert_contact(
+                        tg_account_id=account_id, user_id=user.id,
+                        first_name=getattr(user, "first_name", None),
+                        last_name=getattr(user, "last_name", None),
+                        nickname=getattr(user, "first_name", ""),
+                        username=getattr(user, "username", None),
+                        phone_number=contact_phone, source="import", node_id=node_id,
+                    )
+                    await database.update_contact_assign_status(assign_id, "skipped", result_user_id=user.id)
+                    return
+    except Exception:
+        pass
+
+    # Step 2: ImportContactsRequest (single contact)
+    input_contact = InputPhoneContact(
+        client_id=random.randint(0, 2**31),
+        phone=contact_phone,
+        first_name=contact_phone,
+        last_name="",
+    )
+    result = await tg_client(ImportContactsRequest([input_contact]))
+    logger.info(f"[{phone}] ImportContacts for {contact_phone}: imported={len(result.imported)}, users={len(result.users)}")
+
+    if result.imported and result.users:
+        user = result.users[0]
+        await database.upsert_contact(
+            tg_account_id=account_id, user_id=user.id,
+            first_name=getattr(user, "first_name", None),
+            last_name=getattr(user, "last_name", None),
+            nickname=getattr(user, "first_name", ""),
+            username=getattr(user, "username", None),
+            phone_number=contact_phone, source="import", node_id=node_id,
+        )
+        await database.update_contact_assign_status(assign_id, "success", result_user_id=user.id)
+        logger.info(f"[{phone}] Added contact by phone: {contact_phone} -> {user.id}")
+        return
+
+    if result.users:
+        user = result.users[0]
+        logger.info(f"[{phone}] Already a contact via import: {contact_phone} -> {user.id}")
+        await database.upsert_contact(
+            tg_account_id=account_id, user_id=user.id,
+            first_name=getattr(user, "first_name", None),
+            last_name=getattr(user, "last_name", None),
+            nickname=getattr(user, "first_name", ""),
+            username=getattr(user, "username", None),
+            phone_number=contact_phone, source="import", node_id=node_id,
+        )
+        await database.update_contact_assign_status(assign_id, "skipped", result_user_id=user.id)
+        return
+
+    # Step 3: Fallback — ResolvePhoneRequest then AddContactRequest
+    user = None
+    try:
+        from telethon.tl.functions.contacts import ResolvePhoneRequest
+        phone_clean = contact_phone.replace("+", "")
+        resolved = await tg_client(ResolvePhoneRequest(phone=phone_clean))
+        if resolved and resolved.users:
+            user = resolved.users[0]
+            logger.info(f"[{phone}] ResolvePhone found: {contact_phone} -> {user.id}")
+    except Exception as e:
+        logger.info(f"[{phone}] ResolvePhone failed for {contact_phone}: {e}")
+
+    if not user:
+        try:
+            entity = await tg_client.get_entity(contact_phone)
+            if entity:
+                user = entity
+                logger.info(f"[{phone}] get_entity found: {contact_phone} -> {user.id}")
+        except Exception as e:
+            logger.info(f"[{phone}] get_entity failed for {contact_phone}: {e}")
+
+    if not user:
+        if result.retry_contacts:
+            await database.update_contact_assign_status(assign_id, "pending", error_reason="被限制,将重试")
+            logger.warning(f"[{phone}] ImportContacts rate-limited for {contact_phone}, will retry")
+        else:
+            await database.update_contact_assign_status(assign_id, "failed", error_reason="号码未注册TG或无法添加")
+            logger.warning(f"[{phone}] Cannot find user for {contact_phone}")
+        return
+
+    # Found user via fallback, add via AddContactRequest with proper InputUser
+    input_user = InputUser(user_id=user.id, access_hash=user.access_hash)
+    await tg_client(AddContactRequest(
+        id=input_user,
+        first_name=getattr(user, "first_name", "") or contact_phone,
+        last_name=getattr(user, "last_name", "") or "",
+        phone=contact_phone,
+        add_phone_privacy_exception=True,
+    ))
+    await database.upsert_contact(
+        tg_account_id=account_id, user_id=user.id,
+        first_name=getattr(user, "first_name", None),
+        last_name=getattr(user, "last_name", None),
+        nickname=getattr(user, "first_name", ""),
+        username=getattr(user, "username", None),
+        phone_number=contact_phone, source="import", node_id=node_id,
+    )
+    await database.update_contact_assign_status(assign_id, "success", result_user_id=user.id)
+    logger.info(f"[{phone}] Added contact via fallback: {contact_phone} -> {user.id}")
+
+
+async def _add_one_by_username(tg_client, phone: str, account_id: int, node_id: str,
+                                item: dict, contact_username: str):
+    """Add a single contact by username: get_entity + AddContactRequest."""
+    assign_id = item["id"]
+    username = contact_username.strip()
+    if username.startswith("@"):
+        username = username[1:]
+
+    entity = await tg_client.get_entity(username)
+    if not entity:
+        await database.update_contact_assign_status(assign_id, "failed", error_reason="用户不存在")
+        return
+
+    input_user = InputUser(user_id=entity.id, access_hash=entity.access_hash)
+    await tg_client(AddContactRequest(
+        id=input_user,
+        first_name=getattr(entity, "first_name", "") or username,
+        last_name=getattr(entity, "last_name", "") or "",
+        phone="",
+        add_phone_privacy_exception=True,
+    ))
+    await database.upsert_contact(
+        tg_account_id=account_id, user_id=entity.id,
+        first_name=getattr(entity, "first_name", None),
+        last_name=getattr(entity, "last_name", None),
+        nickname=getattr(entity, "first_name", ""),
+        username=getattr(entity, "username", None),
+        source="import", node_id=node_id,
+    )
+    await database.update_contact_assign_status(assign_id, "success", result_user_id=entity.id)
+    logger.info(f"[{phone}] Added contact by username: {username} -> {entity.id}")
 
 
 async def _batch_import_contacts(tg_client, phone: str, account_id: int, items: list[dict]):
