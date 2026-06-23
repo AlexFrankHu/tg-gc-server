@@ -735,8 +735,8 @@ async def _write_send_fail_log(phone, account_id, my_nickname, user_id,
 
 
 async def _check_and_restrict_account(phone, account_id):
-    """If the account has 3+ FloodWait send failures, mark it as restricted,
-    logout the account, and send TG notification."""
+    """If the account has 2+ FloodWait send failures, mark it as restricted
+    and send TG notification. Does NOT disconnect the Telethon client."""
     try:
         async with database.pool.acquire() as conn:
             async with conn.cursor() as cur:
@@ -747,24 +747,16 @@ async def _check_and_restrict_account(phone, account_id):
                 )
                 row = await cur.fetchone()
                 fail_count = row["cnt"] if row else 0
-                if fail_count >= 3:
+                if fail_count >= 2:
                     await cur.execute(
                         "UPDATE tg_telethon_account SET is_restricted = 1, status = 'restricted', update_time = NOW() WHERE id = %s",
                         (account_id,)
                     )
-                    logger.warning(f"[{phone}] 账号已被标记为限制 (FloodWait失败{fail_count}次), 正在登出...")
-                    # Logout the account and release resources
-                    try:
-                        client = client_manager.active_clients.pop(phone, None)
-                        if client:
-                            await client.disconnect()
-                            logger.info(f"[{phone}] 账号已登出并释放资源")
-                    except Exception as logout_err:
-                        logger.error(f"[{phone}] 登出账号失败: {logout_err}")
+                    logger.warning(f"[{phone}] 账号已被标记为限制 (FloodWait失败{fail_count}次), 保持连接不登出")
                     # Send TG notification
                     await notify.send_notification(
                         "账号被限制",
-                        f"账号: +{phone}\n原因: Too many requests 发送失败{fail_count}次\n状态: 已自动登出并标记为限制"
+                        f"账号: +{phone}\n原因: Too many requests 发送失败{fail_count}次\n状态: 已标记为限制(保持连接)"
                     )
     except Exception as e:
         logger.error(f"[{phone}] 检查账号限制状态失败: {e}")

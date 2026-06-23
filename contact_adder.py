@@ -79,6 +79,12 @@ async def _process_account_group(account_id: int, add_method: str, items: list[d
         return
 
     phone = account["phone"]
+
+    # Skip restricted accounts — do not add contacts
+    if account.get("is_restricted"):
+        logger.info(f"[{phone}] Account is restricted, skipping contact add")
+        return
+
     tg_client = client_manager.active_clients.get(phone)
     if not tg_client:
         logger.warning(f"[{phone}] Account not online, skipping contact add")

@@ -73,25 +73,28 @@ async def lifespan(app: FastAPI):
 
 
 async def _restart_login():
-    """On restart, re-login accounts that were online before for this node.
+    """On restart, re-login accounts that were online or restricted for this node.
 
     Rules:
     1. No proxy → set offline, do not login
-    2. Has proxy → attempt login; success keeps online, failure sets offline
+    2. Has proxy → attempt login; success keeps previous status, failure sets offline
     Both cases also sync status to tg_import_account.
+    Restricted accounts are also re-logged in (they stay restricted but connected).
     """
     try:
         node_id = node_manager.NODE_ID
-        accounts = await database.get_accounts_by_node_and_status(node_id, "online")
+        online_accounts = await database.get_accounts_by_node_and_status(node_id, "online")
+        restricted_accounts = await database.get_accounts_by_node_and_status(node_id, "restricted")
+        accounts = (online_accounts or []) + (restricted_accounts or [])
         if not accounts:
-            logger.info("Restart: no previously online accounts")
+            logger.info("Restart: no previously online/restricted accounts")
             await notify.send_notification(
                 "节点重启完成",
-                "无历史在线账号，无需重新登录"
+                "无历史在线/限制账号，无需重新登录"
             )
             return
 
-        logger.info(f"Restart: found {len(accounts)} previously online accounts")
+        logger.info(f"Restart: found {len(online_accounts or [])} online + {len(restricted_accounts or [])} restricted accounts")
 
         # Write restart logout logs
         for acc in accounts:
@@ -130,6 +133,8 @@ async def _restart_login():
         # 2. Has proxy → attempt login
         online_count = 0
         fail_count = 0
+        # Track which phones were restricted so we can restore their status after login
+        restricted_phones = {acc["phone"] for acc in (restricted_accounts or [])}
         if to_login:
             logger.info(f"Restart: will re-login {len(to_login)} accounts with proxy")
             results = await client_manager.concurrent_login_accounts(
@@ -138,6 +143,10 @@ async def _restart_login():
             for r in results:
                 if r.get("success"):
                     online_count += 1
+                    # Restore restricted status if account was restricted before restart
+                    if r["phone"] in restricted_phones:
+                        await database.update_account_status(r["phone"], "restricted")
+                        logger.info(f"[{r['phone']}] Restart: login OK, restored restricted status")
                 else:
                     fail_count += 1
                     # Login failed → set offline
@@ -145,7 +154,7 @@ async def _restart_login():
                     logger.info(f"[{r['phone']}] Restart login failed, set offline: {r.get('error', '')}")
 
         # Send notification
-        msg_lines = [f"历史在线: {len(accounts)} 个"]
+        msg_lines = [f"历史在线: {len(online_accounts or [])} 个, 限制: {len(restricted_accounts or [])} 个"]
         if no_proxy_accounts:
             msg_lines.append(f"无代理已离线: {len(no_proxy_accounts)} 个")
         if to_login:
