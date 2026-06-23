@@ -22,6 +22,7 @@ import client_manager
 logger = logging.getLogger(__name__)
 
 CONCURRENCY_LIMIT = 5
+MAX_RETRY_COUNT = 3  # After 3 retries, mark account as restricted
 
 
 def _normalize_phone(phone: str) -> str:
@@ -218,8 +219,21 @@ async def _add_one_by_phone(tg_client, phone: str, account_id: int, node_id: str
 
     if not user:
         if result.retry_contacts:
-            await database.update_contact_assign_status(assign_id, "pending", error_reason="被限制,将重试")
-            logger.warning(f"[{phone}] ImportContacts rate-limited for {contact_phone}, will retry")
+            retry_count = await database.increment_retry_count(assign_id)
+            if retry_count >= MAX_RETRY_COUNT:
+                await database.update_contact_assign_status(
+                    assign_id, "failed", error_reason=f"添加好友被限流,重试{retry_count}次后标记账号受限"
+                )
+                await database.mark_account_restricted(account_id, phone)
+                await database.fail_pending_contacts_for_account(
+                    account_id, node_id, f"账号被限制(添加好友连续{retry_count}次被限流)"
+                )
+                logger.warning(f"[{phone}] Account restricted: import rate-limited {retry_count} times")
+            else:
+                await database.update_contact_assign_status(
+                    assign_id, "pending", error_reason=f"被限流,第{retry_count}次重试"
+                )
+                logger.warning(f"[{phone}] ImportContacts rate-limited for {contact_phone}, retry #{retry_count}")
         else:
             await database.update_contact_assign_status(assign_id, "failed", error_reason="号码未注册TG或无法添加")
             logger.warning(f"[{phone}] Cannot find user for {contact_phone}")
@@ -380,12 +394,26 @@ async def _batch_import_contacts(tg_client, phone: str, account_id: int, items: 
 
         # Mark non-imported items
         imported_client_ids = {u.client_id for u in (result.imported or [])}
+        account_hit_limit = False
         for i, item in item_map.items():
             if i not in imported_client_ids:
                 if i in retry_contacts:
-                    await database.update_contact_assign_status(
-                        item["id"], "pending", error_reason="需要重试"
-                    )
+                    retry_count = await database.increment_retry_count(item["id"])
+                    if retry_count >= MAX_RETRY_COUNT and not account_hit_limit:
+                        account_hit_limit = True
+                        await database.mark_account_restricted(account_id, phone)
+                        await database.fail_pending_contacts_for_account(
+                            account_id, node_id,
+                            f"账号被限制(批量添加好友连续{retry_count}次被限流)"
+                        )
+                        logger.warning(
+                            f"[{phone}] Account restricted: batch import rate-limited {retry_count} times"
+                        )
+                        break
+                    else:
+                        await database.update_contact_assign_status(
+                            item["id"], "pending", error_reason=f"被限流,第{retry_count}次重试"
+                        )
                 else:
                     await database.update_contact_assign_status(
                         item["id"], "failed", error_reason="号码未注册TG"
@@ -393,7 +421,7 @@ async def _batch_import_contacts(tg_client, phone: str, account_id: int, items: 
 
         logger.info(
             f"[{phone}] contact_import: {len(result.imported or [])}/{len(contacts)} success, "
-            f"{len(retry_contacts)} retry"
+            f"{len(retry_contacts)} retry{' -> RESTRICTED' if account_hit_limit else ''}"
         )
     except Exception as e:
         logger.error(f"[{phone}] ImportContactsRequest failed: {e}")

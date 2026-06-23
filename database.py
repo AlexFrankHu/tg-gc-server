@@ -415,6 +415,55 @@ async def update_contact_assign_status(assign_id: int, status: str,
             )
 
 
+async def increment_retry_count(assign_id: int) -> int:
+    """Increment retry_count for a contact assign record and return new value."""
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """UPDATE tg_contact_assign_log SET
+                       retry_count = IFNULL(retry_count, 0) + 1,
+                       update_time = NOW()
+                   WHERE id = %s""",
+                (assign_id,),
+            )
+            await cur.execute(
+                "SELECT retry_count FROM tg_contact_assign_log WHERE id = %s",
+                (assign_id,),
+            )
+            row = await cur.fetchone()
+            return row["retry_count"] if row else 0
+
+
+async def mark_account_restricted(account_id: int, phone: str):
+    """Mark an account as restricted in both tg_telethon_account and tg_import_account."""
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """UPDATE tg_telethon_account SET
+                       is_restricted = 1, status = 'restricted', update_time = NOW()
+                   WHERE id = %s""",
+                (account_id,),
+            )
+            await cur.execute(
+                """UPDATE tg_import_account SET
+                       status = 'restricted', update_time = NOW()
+                   WHERE phone = %s""",
+                (phone,),
+            )
+
+
+async def fail_pending_contacts_for_account(account_id: int, node_id: str, error_reason: str):
+    """Mark all pending contact assignments for an account as failed."""
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """UPDATE tg_contact_assign_log SET
+                       status = 'failed', error_reason = %s, update_time = NOW()
+                   WHERE tg_account_id = %s AND node_id = %s AND status = 'pending'""",
+                (error_reason, account_id, node_id),
+            )
+
+
 # =============================================================================
 # Greetings / Opening
 # =============================================================================
