@@ -84,7 +84,7 @@ async def _process_account_group(account_id: int, add_method: str, items: list[d
         logger.warning(f"[{phone}] Account not online, skipping contact add")
         return
 
-    if add_method == "contact_import":
+    if add_method in ("contact_import", "batch_import"):
         await _batch_import_contacts(tg_client, phone, account_id, items)
     else:
         await _add_contacts_one_by_one(tg_client, phone, account_id, items)
