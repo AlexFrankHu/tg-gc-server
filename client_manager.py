@@ -203,12 +203,29 @@ async def concurrent_login_accounts(accounts: list[dict], use_proxy: bool) -> li
     semaphore = asyncio.Semaphore(config.CONCURRENT_LOGIN_LIMIT)
     results = []
 
+    overall_timeout = config.LOGIN_TIMEOUT * 2
+
     async def _login_one(acc):
         async with semaphore:
             phone = acc["phone"]
             try:
-                result = await login_account_by_phone(phone, use_proxy=use_proxy)
+                result = await asyncio.wait_for(
+                    login_account_by_phone(phone, use_proxy=use_proxy),
+                    timeout=overall_timeout,
+                )
                 results.append(result)
+            except asyncio.TimeoutError:
+                logger.error(f"[{phone}] Login overall timeout ({overall_timeout}s)")
+                try:
+                    await database.update_account_status(phone, "failed")
+                    await database.insert_login_log(
+                        phone=phone, result="failed",
+                        reason=f"整体登录超时({overall_timeout}s)",
+                        node_id=node_manager.NODE_ID,
+                    )
+                except Exception:
+                    pass
+                results.append({"phone": phone, "success": False, "error": f"Overall timeout ({overall_timeout}s)"})
             except Exception as e:
                 logger.error(f"[{phone}] Concurrent login error: {e}")
                 results.append({"phone": phone, "success": False, "error": str(e)})
@@ -289,6 +306,7 @@ async def login_account_by_phone(phone: str, use_proxy: bool = True) -> dict:
 
     # Create client
     session_path = _get_session_path(phone)
+    login_timeout = config.LOGIN_TIMEOUT
     try:
         client = TelegramClient(
             session_path,
@@ -297,9 +315,37 @@ async def login_account_by_phone(phone: str, use_proxy: bool = True) -> dict:
             proxy=proxy_kwargs.get("proxy") if proxy_kwargs else None,
             **device_kwargs,
         )
-        await client.connect()
+        try:
+            await asyncio.wait_for(client.connect(), timeout=login_timeout)
+        except asyncio.TimeoutError:
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
+            await database.update_account_status(phone, "failed")
+            await database.insert_login_log(
+                phone=phone, result="failed", reason=f"连接超时({login_timeout}s)",
+                node_id=node_id
+            )
+            logger.warning(f"[{phone}] Login timeout: connect exceeded {login_timeout}s")
+            return {"phone": phone, "success": False, "error": f"Connect timeout ({login_timeout}s)"}
 
-        if not await client.is_user_authorized():
+        try:
+            authorized = await asyncio.wait_for(client.is_user_authorized(), timeout=login_timeout)
+        except asyncio.TimeoutError:
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
+            await database.update_account_status(phone, "failed")
+            await database.insert_login_log(
+                phone=phone, result="failed", reason=f"授权检查超时({login_timeout}s)",
+                node_id=node_id
+            )
+            logger.warning(f"[{phone}] Login timeout: is_user_authorized exceeded {login_timeout}s")
+            return {"phone": phone, "success": False, "error": f"Auth check timeout ({login_timeout}s)"}
+
+        if not authorized:
             await client.disconnect()
             await database.update_account_status(phone, "failed")
             proxy_info = proxy_kwargs.get("proxy_url", "") if proxy_kwargs else "无代理"
@@ -309,7 +355,20 @@ async def login_account_by_phone(phone: str, use_proxy: bool = True) -> dict:
             )
             return {"phone": phone, "success": False, "error": "Session not authorized"}
 
-        me = await client.get_me()
+        try:
+            me = await asyncio.wait_for(client.get_me(), timeout=login_timeout)
+        except asyncio.TimeoutError:
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
+            await database.update_account_status(phone, "failed")
+            await database.insert_login_log(
+                phone=phone, result="failed", reason=f"get_me超时({login_timeout}s)",
+                node_id=node_id
+            )
+            logger.warning(f"[{phone}] Login timeout: get_me exceeded {login_timeout}s")
+            return {"phone": phone, "success": False, "error": f"get_me timeout ({login_timeout}s)"}
         nickname = ""
         if me:
             parts = [me.first_name or "", me.last_name or ""]

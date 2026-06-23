@@ -95,6 +95,7 @@ HEARTBEAT_INTERVAL = 15
 LOGIN_POLL_INTERVAL = 15
 CONTACT_ADDER_INTERVAL = 15
 CONCURRENT_LOGIN_LIMIT = 15  # max concurrent logins at a time
+LOGIN_TIMEOUT = 60  # seconds, per-account login timeout
 
 # Paths
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
