@@ -1,5 +1,6 @@
 """Application configuration for tg-gc-server (cluster node)."""
 import os
+import socket
 from datetime import datetime, timezone, timedelta
 
 # Beijing timezone (UTC+8)
@@ -15,9 +16,25 @@ def to_beijing(dt):
     return dt
 
 
+def _find_available_port(start_port: int = 9990, max_tries: int = 10) -> int:
+    """Find an available port starting from start_port."""
+    for offset in range(max_tries):
+        port = start_port + offset
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.bind(("0.0.0.0", port))
+            s.close()
+            return port
+        except OSError:
+            continue
+    return start_port
+
+
 # Server
 HOST = os.getenv("APP_HOST", "0.0.0.0")
-PORT = int(os.getenv("APP_PORT", "8807"))
+_BASE_PORT = int(os.getenv("APP_PORT", "9990"))
+PORT = _find_available_port(_BASE_PORT)
 
 # Database (MySQL) - must point to the main server's MySQL
 DB_HOST = os.getenv("DB_HOST", "127.0.0.1")
