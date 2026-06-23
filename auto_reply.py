@@ -223,12 +223,19 @@ async def poll_auto_reply():
 
 
 async def _process_proactive_replies():
-    """Iterate eligible contacts and send proactive messages where state >= 0."""
+    """Iterate eligible contacts and send proactive messages where state >= 0.
+
+    Rate-limit: each account sends state=1 opening to at most 1 friend per poll
+    cycle to reduce ban risk.
+    """
     contacts = await _get_eligible_contacts()
     if not contacts:
         return
 
     logger.info(f"Auto-reply poll: {len(contacts)} eligible contacts")
+
+    # Track accounts that already sent a state=1 opening this cycle
+    state1_sent_accounts = set()
 
     for row in contacts:
         try:
@@ -250,6 +257,11 @@ async def _process_proactive_replies():
             account_tg_id = str(row.get('account_tg_user_id') or '')
             friend_tg_id = str(user_id)
             friend_phone_num = row.get('phone_number')
+
+            # Rate-limit state=1: one opening per account per poll cycle
+            if state == 1 and phone in state1_sent_accounts:
+                logger.info(f"[{phone}] 跳过state=1开场白(本轮已发过): user_id={user_id}")
+                continue
 
             if state == 0:
                 # state=0 (polling): friend has sent messages, check count
@@ -345,6 +357,7 @@ async def _process_proactive_replies():
                         await _send_auto_reply(client, phone, account_id, user_id, opening_content,
                                                my_nickname=account_tg_id, friend_nickname=friend_tg_id,
                                                friend_phone=friend_phone_num)
+                        state1_sent_accounts.add(phone)
                         logger.info(f"[{phone}] 主动开场白发送成功: user_id={user_id} (state=1)")
                         await database.insert_auto_reply_log(
                             account_phone=phone, account_nickname=account_tg_id,
