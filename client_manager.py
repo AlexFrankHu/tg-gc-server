@@ -184,14 +184,19 @@ async def _process_pending_logins():
         r = await concurrent_login_accounts(login2_accounts, use_proxy=False)
         results.extend(r)
 
-    if results:
-        online_count = sum(1 for r in results if r.get("success"))
+    # Send summary notification (only for actual new logins, not "Already online")
+    new_logins = [r for r in results if r.get("message") != "Already online"]
+    if new_logins:
+        online_count = sum(1 for r in new_logins if r.get("success"))
+        failed_count = len(new_logins) - online_count
         total_online = len(active_clients)
-        await notify.send_notification(
-            "登录完成",
-            f"本次登录: {online_count}/{len(results)} 成功\n"
-            f"节点在线总数: {total_online}"
-        )
+        lines = [f"本次登录: {online_count} 成功, {failed_count} 失败"]
+        for r in new_logins:
+            status = "✓" if r.get("success") else "✗"
+            err = r.get("error", "")
+            lines.append(f"  {status} {r['phone']}{(' - ' + err) if err else ''}")
+        lines.append(f"节点在线总数: {total_online}")
+        await notify.send_notification("登录完成", "\n".join(lines))
 
 
 # ---------------------------------------------------------------------------
@@ -247,6 +252,8 @@ async def login_account_by_phone(phone: str, use_proxy: bool = True) -> dict:
         use_proxy: If True, use proxy from DB. If False (login2), skip proxy.
     """
     if phone in active_clients:
+        # Already connected - update DB status to online
+        await database.update_account_status(phone, "online")
         return {"phone": phone, "success": True, "message": "Already online"}
 
     node_id = node_manager.NODE_ID
