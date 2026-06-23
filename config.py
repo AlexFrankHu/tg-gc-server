@@ -16,25 +16,60 @@ def to_beijing(dt):
     return dt
 
 
+def _is_port_available(port: int) -> bool:
+    """Check if a port is available."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        s.bind(("0.0.0.0", port))
+        s.close()
+        return True
+    except OSError:
+        return False
+
+
 def _find_available_port(start_port: int = 9990, max_tries: int = 10) -> int:
     """Find an available port starting from start_port."""
     for offset in range(max_tries):
         port = start_port + offset
-        try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            s.bind(("0.0.0.0", port))
-            s.close()
+        if _is_port_available(port):
             return port
-        except OSError:
-            continue
     return start_port
+
+
+def _get_port_file_path() -> str:
+    """Get the path to the persisted port file."""
+    data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+    os.makedirs(data_dir, exist_ok=True)
+    return os.path.join(data_dir, "node_port")
+
+
+def _load_or_assign_port(base_port: int) -> int:
+    """Load persisted port if available, otherwise find a new one and save it."""
+    port_file = _get_port_file_path()
+    # Try to load saved port
+    if os.path.exists(port_file):
+        try:
+            with open(port_file, "r") as f:
+                saved_port = int(f.read().strip())
+            if _is_port_available(saved_port):
+                return saved_port
+        except (ValueError, IOError):
+            pass
+    # Find a new available port and save it
+    port = _find_available_port(base_port)
+    try:
+        with open(port_file, "w") as f:
+            f.write(str(port))
+    except IOError:
+        pass
+    return port
 
 
 # Server
 HOST = os.getenv("APP_HOST", "0.0.0.0")
 _BASE_PORT = int(os.getenv("APP_PORT", "9990"))
-PORT = _find_available_port(_BASE_PORT)
+PORT = _load_or_assign_port(_BASE_PORT)
 
 # Database (MySQL) - must point to the main server's MySQL
 DB_HOST = os.getenv("DB_HOST", "127.0.0.1")
