@@ -221,8 +221,15 @@ async def concurrent_login_accounts(accounts: list[dict], use_proxy: bool) -> li
                 results.append(result)
             except asyncio.TimeoutError:
                 logger.error(f"[{phone}] Login overall timeout ({overall_timeout}s)")
+                # Remove from active_clients and disconnect if partially logged in
+                old_client = active_clients.pop(phone, None)
+                if old_client:
+                    try:
+                        await old_client.disconnect()
+                    except Exception:
+                        pass
                 try:
-                    await database.update_account_status(phone, "failed")
+                    await database.update_account_status(phone, "offline")
                     await database.insert_login_log(
                         phone=phone, result="failed",
                         reason=f"整体登录超时({overall_timeout}s)",
@@ -252,9 +259,16 @@ async def login_account_by_phone(phone: str, use_proxy: bool = True) -> dict:
         use_proxy: If True, use proxy from DB. If False (login2), skip proxy.
     """
     if phone in active_clients:
-        # Already connected - update DB status to online
-        await database.update_account_status(phone, "online")
-        return {"phone": phone, "success": True, "message": "Already online"}
+        # Verify the client is actually connected
+        existing_client = active_clients[phone]
+        if existing_client.is_connected():
+            await database.update_account_status(phone, "online")
+            return {"phone": phone, "success": True, "message": "Already online"}
+        else:
+            # Client object exists but disconnected — remove and re-login
+            active_clients.pop(phone, None)
+            await database.update_account_status(phone, "offline")
+            logger.warning(f"[{phone}] Found disconnected client in active_clients, removing and re-logging in")
 
     node_id = node_manager.NODE_ID
 
@@ -329,7 +343,8 @@ async def login_account_by_phone(phone: str, use_proxy: bool = True) -> dict:
                 await client.disconnect()
             except Exception:
                 pass
-            await database.update_account_status(phone, "failed")
+            active_clients.pop(phone, None)
+            await database.update_account_status(phone, "offline")
             await database.insert_login_log(
                 phone=phone, result="failed", reason=f"连接超时({login_timeout}s)",
                 node_id=node_id
@@ -344,7 +359,8 @@ async def login_account_by_phone(phone: str, use_proxy: bool = True) -> dict:
                 await client.disconnect()
             except Exception:
                 pass
-            await database.update_account_status(phone, "failed")
+            active_clients.pop(phone, None)
+            await database.update_account_status(phone, "offline")
             await database.insert_login_log(
                 phone=phone, result="failed", reason=f"授权检查超时({login_timeout}s)",
                 node_id=node_id
@@ -354,7 +370,8 @@ async def login_account_by_phone(phone: str, use_proxy: bool = True) -> dict:
 
         if not authorized:
             await client.disconnect()
-            await database.update_account_status(phone, "failed")
+            active_clients.pop(phone, None)
+            await database.update_account_status(phone, "offline")
             proxy_info = proxy_kwargs.get("proxy_url", "") if proxy_kwargs else "无代理"
             await database.insert_login_log(
                 phone=phone, result="failed", reason="Session未授权",
@@ -369,7 +386,8 @@ async def login_account_by_phone(phone: str, use_proxy: bool = True) -> dict:
                 await client.disconnect()
             except Exception:
                 pass
-            await database.update_account_status(phone, "failed")
+            active_clients.pop(phone, None)
+            await database.update_account_status(phone, "offline")
             await database.insert_login_log(
                 phone=phone, result="failed", reason=f"get_me超时({login_timeout}s)",
                 node_id=node_id
@@ -416,6 +434,11 @@ async def login_account_by_phone(phone: str, use_proxy: bool = True) -> dict:
         return {"phone": phone, "success": True, "nickname": nickname}
 
     except (AuthKeyUnregisteredError, UserDeactivatedBanError) as e:
+        active_clients.pop(phone, None)
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
         await database.update_account_status(phone, "banned")
         await database.insert_login_log(
             phone=phone, result="banned", reason=str(e),
@@ -423,7 +446,12 @@ async def login_account_by_phone(phone: str, use_proxy: bool = True) -> dict:
         )
         return {"phone": phone, "success": False, "error": f"Banned: {e}"}
     except Exception as e:
-        await database.update_account_status(phone, "failed")
+        active_clients.pop(phone, None)
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
+        await database.update_account_status(phone, "offline")
         await database.insert_login_log(
             phone=phone, result="failed", reason=str(e),
             node_id=node_id
