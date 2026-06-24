@@ -137,14 +137,49 @@ async def handle_incoming_message(phone: str, event, client):
                         await _disable_contact_auto_reply(account_id, user_id, phone)
                     raise
             else:
-                logger.info(f"[{phone}] [AutoReply] 无有效广告问候语, 跳过: user_id={user_id}")
-                await database.insert_auto_reply_log(
-                    account_phone=phone, account_nickname=account_tg_id,
-                    friend_user_id=user_id, friend_nickname=friend_tg_id,
-                    friend_phone=friend_phone_num, trigger_type='incoming',
-                    state=0, request_params=f'好友消息数={friend_msg_count}<=1, 发送广告问候语',
-                    chat_context='', reply_content=None,
-                    send_result='no_reply', error_reason='无有效广告问候语', node_id=node_manager.NODE_ID)
+                # 无有效广告问候语，降级走AI自动回复
+                logger.info(f"[{phone}] [AutoReply] 无有效广告问候语, 降级AI回复: user_id={user_id}")
+                chat_context = await _build_chat_context(account_id, user_id, account_tg_id, friend_tg_id)
+                request_params_str = f"好友消息数={friend_msg_count}<=1, 无广告问候语, 降级AI回复"
+                reply, api_error = await _get_reply_content(
+                    state=0, my_nickname=account_tg_id,
+                    customer_name=friend_tg_id, chat_context=chat_context,
+                )
+                if reply:
+                    await asyncio.sleep(2)
+                    try:
+                        await _send_auto_reply(client, phone, account_id, user_id, reply,
+                                               my_nickname=account_tg_id, friend_nickname=friend_tg_id,
+                                               friend_phone=friend_phone_num)
+                        logger.info(f"[{phone}] [AutoReply] 降级AI回复成功: user_id={user_id}")
+                        await database.insert_auto_reply_log(
+                            account_phone=phone, account_nickname=account_tg_id,
+                            friend_user_id=user_id, friend_nickname=friend_tg_id,
+                            friend_phone=friend_phone_num, trigger_type='incoming',
+                            state=0, request_params=request_params_str,
+                            chat_context=chat_context, reply_content=reply,
+                            send_result='success', node_id=node_manager.NODE_ID)
+                    except Exception as send_err:
+                        logger.error(f"[{phone}] [AutoReply] 降级AI回复发送失败: user_id={user_id}, error={send_err}")
+                        await database.insert_auto_reply_log(
+                            account_phone=phone, account_nickname=account_tg_id,
+                            friend_user_id=user_id, friend_nickname=friend_tg_id,
+                            friend_phone=friend_phone_num, trigger_type='incoming',
+                            state=0, request_params=request_params_str,
+                            chat_context=chat_context, reply_content=reply,
+                            send_result='failed', error_reason=str(send_err), node_id=node_manager.NODE_ID)
+                        if 'PRIVACY_PREMIUM_REQUIRED' in str(send_err):
+                            await _disable_contact_auto_reply(account_id, user_id, phone)
+                        raise
+                else:
+                    result_type = 'api_error' if api_error and 'API' in api_error else 'no_reply'
+                    await database.insert_auto_reply_log(
+                        account_phone=phone, account_nickname=account_tg_id,
+                        friend_user_id=user_id, friend_nickname=friend_tg_id,
+                        friend_phone=friend_phone_num, trigger_type='incoming',
+                        state=0, request_params=request_params_str,
+                        chat_context=chat_context, reply_content=None,
+                        send_result=result_type, error_reason=api_error, node_id=node_manager.NODE_ID)
         else:
             # Friend sent > 1 message: call auto-reply API
             chat_context = await _build_chat_context(account_id, user_id, account_tg_id, friend_tg_id)
@@ -296,14 +331,48 @@ async def _process_proactive_replies():
                                 await _disable_contact_auto_reply(account_id, user_id, phone)
                             raise
                     else:
-                        logger.info(f"[{phone}] 无有效广告问候语(polling state=0): user_id={user_id}")
-                        await database.insert_auto_reply_log(
-                            account_phone=phone, account_nickname=account_tg_id,
-                            friend_user_id=user_id, friend_nickname=friend_tg_id,
-                            friend_phone=friend_phone_num, trigger_type='polling',
-                            state=state, request_params='state=0, 好友消息数<=1, 发送广告问候语',
-                            chat_context='', reply_content=None,
-                            send_result='no_reply', error_reason='无有效广告问候语', node_id=node_manager.NODE_ID)
+                        # 无有效广告问候语，降级走AI自动回复
+                        logger.info(f"[{phone}] 无有效广告问候语(polling), 降级AI回复: user_id={user_id}")
+                        chat_context = await _build_chat_context(account_id, user_id, account_tg_id, friend_tg_id)
+                        request_params_str = f"好友消息数={friend_msg_count}<=1, 无广告问候语, 降级AI回复"
+                        reply, api_error = await _get_reply_content(
+                            state=0, my_nickname=account_tg_id,
+                            customer_name=friend_tg_id, chat_context=chat_context,
+                        )
+                        if reply:
+                            try:
+                                await _send_auto_reply(client, phone, account_id, user_id, reply,
+                                                       my_nickname=account_tg_id, friend_nickname=friend_tg_id,
+                                                       friend_phone=friend_phone_num)
+                                logger.info(f"[{phone}] 降级AI回复成功(polling): user_id={user_id}")
+                                await database.insert_auto_reply_log(
+                                    account_phone=phone, account_nickname=account_tg_id,
+                                    friend_user_id=user_id, friend_nickname=friend_tg_id,
+                                    friend_phone=friend_phone_num, trigger_type='polling',
+                                    state=state, request_params=request_params_str,
+                                    chat_context=chat_context, reply_content=reply,
+                                    send_result='success', node_id=node_manager.NODE_ID)
+                            except Exception as send_err:
+                                logger.error(f"[{phone}] 降级AI回复发送失败(polling): user_id={user_id}, error={send_err}")
+                                await database.insert_auto_reply_log(
+                                    account_phone=phone, account_nickname=account_tg_id,
+                                    friend_user_id=user_id, friend_nickname=friend_tg_id,
+                                    friend_phone=friend_phone_num, trigger_type='polling',
+                                    state=state, request_params=request_params_str,
+                                    chat_context=chat_context, reply_content=reply,
+                                    send_result='failed', error_reason=str(send_err), node_id=node_manager.NODE_ID)
+                                if 'PRIVACY_PREMIUM_REQUIRED' in str(send_err):
+                                    await _disable_contact_auto_reply(account_id, user_id, phone)
+                                raise
+                        else:
+                            result_type = 'api_error' if api_error and 'API' in api_error else 'no_reply'
+                            await database.insert_auto_reply_log(
+                                account_phone=phone, account_nickname=account_tg_id,
+                                friend_user_id=user_id, friend_nickname=friend_tg_id,
+                                friend_phone=friend_phone_num, trigger_type='polling',
+                                state=state, request_params=request_params_str,
+                                chat_context=chat_context, reply_content=None,
+                                send_result=result_type, error_reason=api_error, node_id=node_manager.NODE_ID)
                 else:
                     # Friend sent > 1 message: call auto-reply API
                     chat_context = await _build_chat_context(account_id, user_id, account_tg_id, friend_tg_id)
