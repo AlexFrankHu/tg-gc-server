@@ -18,11 +18,12 @@ import config
 import database
 import node_manager
 import client_manager
+import watchdog
 
 logger = logging.getLogger(__name__)
 
 CONCURRENCY_LIMIT = 5
-MAX_RETRY_COUNT = 3  # After 3 retries, mark account as restricted
+MAX_RETRY_COUNT = 2  # After 2 retries, mark account as restricted
 
 
 def _normalize_phone(phone: str) -> str:
@@ -38,6 +39,7 @@ async def poll_contact_adder():
         try:
             await asyncio.sleep(config.CONTACT_ADDER_INTERVAL)
             await _process_pending_contacts()
+            watchdog.ping()
         except asyncio.CancelledError:
             break
         except Exception as e:
@@ -81,14 +83,34 @@ async def _process_account_group(account_id: int, add_method: str, items: list[d
 
     phone = account["phone"]
 
-    # Skip restricted accounts — do not add contacts
+    # Skip restricted accounts — do not add contacts, mark pending as failed
     if account.get("is_restricted"):
-        logger.info(f"[{phone}] Account is restricted, skipping contact add")
+        logger.info(f"[{phone}] Account is restricted, marking pending records as failed")
+        node_id = node_manager.NODE_ID
+        await database.fail_pending_contacts_for_account(
+            account_id, node_id, "账号已被限制，无法添加好友"
+        )
         return
 
     tg_client = client_manager.active_clients.get(phone)
+    if tg_client and not tg_client.is_connected():
+        logger.warning(f"[{phone}] Client in active_clients but disconnected, removing and setting offline")
+        client_manager.active_clients.pop(phone, None)
+        await database.update_account_status(phone, "offline")
+        tg_client = None
+
     if not tg_client:
-        logger.warning(f"[{phone}] Account not online, skipping contact add")
+        logger.warning(f"[{phone}] Account not online, incrementing retry count")
+        node_id = node_manager.NODE_ID
+        for item in items:
+            retry_count = await database.increment_retry_count(item["id"])
+            if retry_count >= MAX_RETRY_COUNT:
+                logger.warning(f"[{phone}] Retry count {retry_count} >= {MAX_RETRY_COUNT} (offline), marking account restricted")
+                await database.mark_account_restricted(account_id, phone)
+                await database.fail_pending_contacts_for_account(
+                    account_id, node_id, f"账号离线且重试{retry_count}次仍无法添加好友，标记为受限"
+                )
+                break
         return
 
     if add_method in ("contact_import", "batch_import"):

@@ -22,6 +22,7 @@ from config import to_beijing
 import database
 import client_manager
 import node_manager
+import watchdog
 
 logger = logging.getLogger(__name__)
 
@@ -250,6 +251,7 @@ async def poll_auto_reply():
             logger.info("Auto-reply poll: starting...")
             await _process_proactive_replies()
             logger.info("Auto-reply poll: done")
+            watchdog.ping()
         except asyncio.CancelledError:
             logger.warning("Auto-reply poll: CancelledError during processing, will retry next cycle")
             continue
@@ -279,6 +281,11 @@ async def _process_proactive_replies():
                 continue
 
             client = client_manager.active_clients[phone]
+            if not client.is_connected():
+                logger.warning(f"[{phone}] Client disconnected during auto-reply poll, removing and setting offline")
+                client_manager.active_clients.pop(phone, None)
+                await database.update_account_status(phone, "offline")
+                continue
             account_id = row['account_id']
             user_id = row['user_id']
 
@@ -831,7 +838,7 @@ async def _check_and_restrict_account(phone, account_id):
                 fail_count = row["cnt"] if row else 0
                 if fail_count >= 2:
                     await cur.execute(
-                        "UPDATE tg_telethon_account SET is_restricted = 1, status = 'restricted', update_time = NOW() WHERE id = %s",
+                        "UPDATE tg_telethon_account SET is_restricted = 1, update_time = NOW() WHERE id = %s",
                         (account_id,)
                     )
                     logger.warning(f"[{phone}] 账号已被标记为限制 (FloodWait失败{fail_count}次), 保持连接不登出")
