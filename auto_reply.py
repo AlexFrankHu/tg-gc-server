@@ -10,6 +10,7 @@ import re
 import random
 import tempfile
 import os
+import time
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -33,6 +34,13 @@ OFFICIAL_IDS = {777000}
 REPLY_API_URL = getattr(config, 'REPLY_API_URL', 'http://127.0.0.1:8000/generate-reply')
 POLL_INTERVAL = getattr(config, 'AUTO_REPLY_INTERVAL', 300)  # seconds
 
+# Telegram error text meaning the target user's account was deleted/deactivated
+USER_DELETED_ERR = 'The specified user was deleted'
+
+# System-level auto-reply switch (tg_system_config.auto_reply_enabled), cached briefly
+_AUTO_REPLY_CFG = {'value': True, 'ts': 0.0}
+_AUTO_REPLY_CFG_TTL = 30  # seconds
+
 
 # ---------------------------------------------------------------------------
 # Trigger 1: Incoming message auto-reply (state=0)
@@ -51,6 +59,11 @@ async def handle_incoming_message(phone: str, event, client):
             return
 
         logger.info(f"[{phone}] [AutoReply] 收到消息, sender_id={user_id}")
+
+        # System-level auto-reply switch: if off, do not fetch reply nor send
+        if not await _is_auto_reply_enabled():
+            logger.info(f"[{phone}] [AutoReply] 跳过: 系统级自动回复开关已关闭")
+            return
 
         # Exclude official IDs
         if user_id in OFFICIAL_IDS:
@@ -134,8 +147,7 @@ async def handle_incoming_message(phone: str, event, client):
                         state=0, request_params=f'好友消息数={friend_msg_count}<=1, 发送广告问候语',
                         chat_context='', reply_content=greeting.get('content', ''),
                         send_result='failed', error_reason=str(send_err), node_id=node_manager.NODE_ID)
-                    if 'PRIVACY_PREMIUM_REQUIRED' in str(send_err):
-                        await _disable_contact_auto_reply(account_id, user_id, phone)
+                    await _handle_send_failure(send_err, account_id, user_id, phone)
                     raise
             else:
                 # 无有效广告问候语，降级走AI自动回复
@@ -169,8 +181,7 @@ async def handle_incoming_message(phone: str, event, client):
                             state=0, request_params=request_params_str,
                             chat_context=chat_context, reply_content=reply,
                             send_result='failed', error_reason=str(send_err), node_id=node_manager.NODE_ID)
-                        if 'PRIVACY_PREMIUM_REQUIRED' in str(send_err):
-                            await _disable_contact_auto_reply(account_id, user_id, phone)
+                        await _handle_send_failure(send_err, account_id, user_id, phone)
                         raise
                 else:
                     result_type = 'api_error' if api_error and 'API' in api_error else 'no_reply'
@@ -216,8 +227,7 @@ async def handle_incoming_message(phone: str, event, client):
                         state=0, request_params=request_params_str,
                         chat_context=chat_context, reply_content=reply,
                         send_result='failed', error_reason=str(send_err), node_id=node_manager.NODE_ID)
-                    if 'PRIVACY_PREMIUM_REQUIRED' in str(send_err):
-                        await _disable_contact_auto_reply(account_id, user_id, phone)
+                    await _handle_send_failure(send_err, account_id, user_id, phone)
                     raise
             else:
                 result_type = 'api_error' if api_error and 'API' in api_error else 'no_reply'
@@ -265,6 +275,11 @@ async def _process_proactive_replies():
     Rate-limit: each account sends state=1 opening to at most 1 friend per poll
     cycle to reduce ban risk.
     """
+    # System-level auto-reply switch: if off, skip this cycle entirely (loop keeps running)
+    if not await _is_auto_reply_enabled():
+        logger.info("Auto-reply poll: 系统级自动回复开关已关闭, 本轮不发送")
+        return
+
     contacts = await _get_eligible_contacts()
     if not contacts:
         return
@@ -334,8 +349,7 @@ async def _process_proactive_replies():
                                 state=state, request_params='state=0, 好友消息数<=1, 发送广告问候语',
                                 chat_context='', reply_content=greeting.get('content', ''),
                                 send_result='failed', error_reason=str(send_err), node_id=node_manager.NODE_ID)
-                            if 'PRIVACY_PREMIUM_REQUIRED' in str(send_err):
-                                await _disable_contact_auto_reply(account_id, user_id, phone)
+                            await _handle_send_failure(send_err, account_id, user_id, phone)
                             raise
                     else:
                         # 无有效广告问候语，降级走AI自动回复
@@ -368,8 +382,7 @@ async def _process_proactive_replies():
                                     state=state, request_params=request_params_str,
                                     chat_context=chat_context, reply_content=reply,
                                     send_result='failed', error_reason=str(send_err), node_id=node_manager.NODE_ID)
-                                if 'PRIVACY_PREMIUM_REQUIRED' in str(send_err):
-                                    await _disable_contact_auto_reply(account_id, user_id, phone)
+                                await _handle_send_failure(send_err, account_id, user_id, phone)
                                 raise
                         else:
                             result_type = 'api_error' if api_error and 'API' in api_error else 'no_reply'
@@ -412,8 +425,7 @@ async def _process_proactive_replies():
                                 state=state, request_params=request_params_str,
                                 chat_context=chat_context, reply_content=reply,
                                 send_result='failed', error_reason=str(send_err), node_id=node_manager.NODE_ID)
-                            if 'PRIVACY_PREMIUM_REQUIRED' in str(send_err):
-                                await _disable_contact_auto_reply(account_id, user_id, phone)
+                            await _handle_send_failure(send_err, account_id, user_id, phone)
                             raise
                     else:
                         result_type = 'api_error' if api_error and 'API' in api_error else 'no_reply'
@@ -451,8 +463,7 @@ async def _process_proactive_replies():
                             state=state, request_params='state=1, 随机主动开场白',
                             chat_context='', reply_content=opening_content,
                             send_result='failed', error_reason=str(send_err), node_id=node_manager.NODE_ID)
-                        if 'PRIVACY_PREMIUM_REQUIRED' in str(send_err):
-                            await _disable_contact_auto_reply(account_id, user_id, phone)
+                        await _handle_send_failure(send_err, account_id, user_id, phone)
                         raise
                 else:
                     logger.info(f"[{phone}] 无有效主动开场白, 跳过: user_id={user_id}")
@@ -497,8 +508,7 @@ async def _process_proactive_replies():
                             state=state, request_params=request_params_str,
                             chat_context=chat_context, reply_content=reply,
                             send_result='failed', error_reason=str(send_err), node_id=node_manager.NODE_ID)
-                        if 'PRIVACY_PREMIUM_REQUIRED' in str(send_err):
-                            await _disable_contact_auto_reply(account_id, user_id, phone)
+                        await _handle_send_failure(send_err, account_id, user_id, phone)
                         raise
                 else:
                     result_type = 'api_error' if api_error and 'API' in api_error else 'no_reply'
@@ -686,6 +696,58 @@ async def _download_image(url: str) -> str | None:
     except Exception as e:
         logger.error(f"[AutoReply] 下载图片异常: {url}, error={e}")
     return None
+
+
+async def _is_auto_reply_enabled() -> bool:
+    """Read system-level auto-reply switch from tg_system_config (cached ~30s).
+
+    Returns True if enabled (default). On read failure, keeps the last known value.
+    """
+    now = time.monotonic()
+    if now - _AUTO_REPLY_CFG['ts'] < _AUTO_REPLY_CFG_TTL:
+        return _AUTO_REPLY_CFG['value']
+    try:
+        async with database.pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "SELECT config_value FROM tg_system_config WHERE config_key = %s",
+                    ('auto_reply_enabled',)
+                )
+                row = await cur.fetchone()
+        enabled = True
+        if row is not None:
+            val = row['config_value'] if isinstance(row, dict) else row[0]
+            enabled = str(val).strip().lower() in ('1', 'true', 'on', 'yes')
+        _AUTO_REPLY_CFG['value'] = enabled
+        _AUTO_REPLY_CFG['ts'] = now
+        return enabled
+    except Exception as e:
+        logger.error(f"[AutoReply] 读取自动回复开关失败, 沿用上次值({_AUTO_REPLY_CFG['value']}): {e}")
+        return _AUTO_REPLY_CFG['value']
+
+
+async def _mark_contact_deregistered(account_id: int, user_id: int, phone: str):
+    """Mark a contact as deregistered (their Telegram account was deleted)."""
+    try:
+        async with database.pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "UPDATE tg_contact SET is_deregistered = 1, update_time = NOW() "
+                    "WHERE tg_account_id = %s AND user_id = %s",
+                    (account_id, user_id)
+                )
+        logger.info(f"[{phone}] [AutoReply] 好友 {user_id} 账号已注销, 标记 is_deregistered=1")
+    except Exception as e:
+        logger.error(f"[{phone}] [AutoReply] 标记好友注销失败: {e}")
+
+
+async def _handle_send_failure(send_err, account_id: int, user_id: int, phone: str):
+    """Post-processing after a send failure: react to specific Telegram errors."""
+    err = str(send_err)
+    if 'PRIVACY_PREMIUM_REQUIRED' in err:
+        await _disable_contact_auto_reply(account_id, user_id, phone)
+    if USER_DELETED_ERR in err:
+        await _mark_contact_deregistered(account_id, user_id, phone)
 
 
 async def _disable_contact_auto_reply(account_id: int, user_id: int, phone: str):
@@ -956,6 +1018,7 @@ async def _get_eligible_contacts() -> list:
         JOIN tg_telethon_account a ON c.tg_account_id = a.id
         WHERE c.auto_reply = 1
           AND c.is_bot = 0
+          AND (c.is_deregistered = 0 OR c.is_deregistered IS NULL)
           AND c.source = 'import'
           AND c.user_id NOT IN ({placeholders})
           AND a.auto_reply = 1
