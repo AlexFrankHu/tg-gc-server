@@ -79,7 +79,7 @@ DB_PASSWORD = os.getenv("DB_PASSWORD", "TgGc@2026!Secure")
 DB_NAME = os.getenv("DB_NAME", "tg_gc")
 
 # Telegram Bot Notification
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8534398194:AAF6CKDeS_yGeo167C4znOq9cR3porDGJa0")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8995484464:AAHWjku4XUj0Y-yJs5AYmyRLLCEH-wUSh0A")
 BOT_CHAT_ID = os.getenv("BOT_CHAT_ID", "-5181774632")
 
 # JWT Secret for web client authentication

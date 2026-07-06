@@ -10,6 +10,7 @@ import httpx
 
 import config
 import database
+import watchdog
 
 logger = logging.getLogger(__name__)
 
@@ -146,6 +147,7 @@ async def heartbeat_loop():
         try:
             await asyncio.sleep(HEARTBEAT_INTERVAL)
             await _update_heartbeat()
+            watchdog.ping()
         except asyncio.CancelledError:
             break
         except Exception as e:
@@ -164,9 +166,9 @@ async def _update_heartbeat():
                 )
                 total = (await cur.fetchone())["cnt"]
 
-                # Count online accounts
+                # Count online accounts (exclude deleted so it stays consistent with total)
                 await cur.execute(
-                    "SELECT COUNT(*) AS cnt FROM tg_telethon_account WHERE node_id = %s AND status = 'online'",
+                    "SELECT COUNT(*) AS cnt FROM tg_telethon_account WHERE node_id = %s AND status = 'online' AND is_deleted = 0",
                     (NODE_ID,),
                 )
                 online = (await cur.fetchone())["cnt"]

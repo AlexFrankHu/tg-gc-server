@@ -77,6 +77,17 @@ async def get_accounts_by_node_and_status(node_id: str, status: str) -> list[dic
             return await cur.fetchall()
 
 
+async def get_restricted_accounts_by_node(node_id: str) -> list[dict]:
+    """Get accounts that are restricted (is_restricted=1) for a node, regardless of status."""
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT * FROM tg_telethon_account WHERE node_id = %s AND is_restricted = 1 AND status != 'online' AND is_deleted = 0",
+                (node_id,),
+            )
+            return await cur.fetchall()
+
+
 async def get_account_by_phone(phone: str) -> dict | None:
     """Get a single account by phone number."""
     async with pool.acquire() as conn:
@@ -435,20 +446,14 @@ async def increment_retry_count(assign_id: int) -> int:
 
 
 async def mark_account_restricted(account_id: int, phone: str):
-    """Mark an account as restricted in both tg_telethon_account and tg_import_account."""
+    """Mark an account as restricted (is_restricted=1), without changing status."""
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
                 """UPDATE tg_telethon_account SET
-                       is_restricted = 1, status = 'restricted', update_time = NOW()
+                       is_restricted = 1, update_time = NOW()
                    WHERE id = %s""",
                 (account_id,),
-            )
-            await cur.execute(
-                """UPDATE tg_import_account SET
-                       status = 'restricted', update_time = NOW()
-                   WHERE phone = %s""",
-                (phone,),
             )
 
 
@@ -459,8 +464,9 @@ async def fail_pending_contacts_for_account(account_id: int, node_id: str, error
             await cur.execute(
                 """UPDATE tg_contact_assign_log SET
                        status = 'failed', error_reason = %s, update_time = NOW()
-                   WHERE tg_account_id = %s AND node_id = %s AND status = 'pending'""",
-                (error_reason, account_id, node_id),
+                   WHERE (account_id = %s OR tg_account_id = %s)
+                     AND node_id = %s AND status = 'pending'""",
+                (error_reason, account_id, account_id, node_id),
             )
 
 
