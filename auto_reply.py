@@ -286,8 +286,9 @@ async def _process_proactive_replies():
 
     logger.info(f"Auto-reply poll: {len(contacts)} eligible contacts")
 
-    # Track accounts that already sent a state=1 opening this cycle
-    state1_sent_accounts = set()
+    # Track accounts that already attempted a proactive send this cycle.
+    # 每轮单账号只给一个好友发消息(不论成功/失败均计入), 降低封号风险
+    sent_accounts = set()
 
     for row in contacts:
         try:
@@ -315,9 +316,9 @@ async def _process_proactive_replies():
             friend_tg_id = str(user_id)
             friend_phone_num = row.get('phone_number')
 
-            # Rate-limit state=1: one opening per account per poll cycle
-            if state == 1 and phone in state1_sent_accounts:
-                logger.info(f"[{phone}] 跳过state=1开场白(本轮已发过): user_id={user_id}")
+            # 每轮单账号只发一个好友: 本账号本轮已尝试过发送则跳过
+            if phone in sent_accounts:
+                logger.info(f"[{phone}] 跳过(本轮该账号已给一个好友发过): user_id={user_id}, state={state}")
                 continue
 
             if state == 0:
@@ -328,6 +329,7 @@ async def _process_proactive_replies():
                     greeting = await _get_first_greeting()
                     if greeting:
                         try:
+                            sent_accounts.add(phone)
                             await _send_greeting_reply(client, phone, account_id, user_id, greeting)
                             logger.info(f"[{phone}] 广告问候语发送成功(polling state=0): user_id={user_id}")
                             reply_desc = greeting.get('content', '')
@@ -362,6 +364,7 @@ async def _process_proactive_replies():
                         )
                         if reply:
                             try:
+                                sent_accounts.add(phone)
                                 await _send_auto_reply(client, phone, account_id, user_id, reply,
                                                        my_nickname=account_tg_id, friend_nickname=friend_tg_id,
                                                        friend_phone=friend_phone_num)
@@ -405,6 +408,7 @@ async def _process_proactive_replies():
                     )
                     if reply:
                         try:
+                            sent_accounts.add(phone)
                             await _send_auto_reply(client, phone, account_id, user_id, reply,
                                                    my_nickname=account_tg_id, friend_nickname=friend_tg_id,
                                                    friend_phone=friend_phone_num)
@@ -442,10 +446,10 @@ async def _process_proactive_replies():
                 if opening:
                     try:
                         opening_content = opening['content']
+                        sent_accounts.add(phone)
                         await _send_auto_reply(client, phone, account_id, user_id, opening_content,
                                                my_nickname=account_tg_id, friend_nickname=friend_tg_id,
                                                friend_phone=friend_phone_num)
-                        state1_sent_accounts.add(phone)
                         logger.info(f"[{phone}] 主动开场白发送成功: user_id={user_id} (state=1)")
                         await database.insert_auto_reply_log(
                             account_phone=phone, account_nickname=account_tg_id,
@@ -488,6 +492,7 @@ async def _process_proactive_replies():
                 )
                 if reply:
                     try:
+                        sent_accounts.add(phone)
                         await _send_auto_reply(client, phone, account_id, user_id, reply,
                                                my_nickname=account_tg_id, friend_nickname=friend_tg_id,
                                                friend_phone=friend_phone_num)
