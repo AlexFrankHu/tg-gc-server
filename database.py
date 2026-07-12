@@ -2,16 +2,52 @@
 
 All tables use utf8mb4. Node-scoped queries filter by node_id.
 """
+import asyncio
+import functools
 import logging
 from datetime import datetime
 
 import aiomysql
+from pymysql.err import OperationalError
 
 import config
 
 logger = logging.getLogger(__name__)
 
 pool: aiomysql.Pool = None
+
+# MySQL 锁相关错误: 1205=Lock wait timeout, 1213=Deadlock。
+# 这类错误是可重试的(与统计任务等大事务抢锁导致), 重试通常即可成功。
+_LOCK_ERROR_CODES = (1205, 1213)
+
+
+def retry_on_lock(max_retries: int = 3, base_delay: float = 0.2):
+    """Decorator: retry an async DB write on MySQL lock-wait-timeout(1205)/deadlock(1213).
+
+    Each decorated function acquires its own autocommit connection and its writes are
+    idempotent (upsert / single-row update), so re-running the whole function is safe.
+    """
+    def decorator(fn):
+        @functools.wraps(fn)
+        async def wrapper(*args, **kwargs):
+            attempt = 0
+            while True:
+                try:
+                    return await fn(*args, **kwargs)
+                except OperationalError as e:
+                    code = e.args[0] if e.args else None
+                    if code in _LOCK_ERROR_CODES and attempt < max_retries:
+                        attempt += 1
+                        delay = base_delay * attempt
+                        logger.warning(
+                            f"DB lock error ({code}) on {fn.__name__}, "
+                            f"retry {attempt}/{max_retries} after {delay:.2f}s"
+                        )
+                        await asyncio.sleep(delay)
+                        continue
+                    raise
+        return wrapper
+    return decorator
 
 
 async def init_db():
@@ -110,6 +146,7 @@ async def get_account_by_id(account_id: int) -> dict | None:
             return await cur.fetchone()
 
 
+@retry_on_lock()
 async def update_account_status(phone: str, status: str):
     """Update account status in tg_telethon_account and tg_import_account."""
     async with pool.acquire() as conn:
@@ -209,6 +246,7 @@ async def get_contact(tg_account_id: int, user_id: int) -> dict | None:
             return await cur.fetchone()
 
 
+@retry_on_lock()
 async def upsert_contact(tg_account_id: int, user_id: int, first_name: str = None,
                           last_name: str = None, nickname: str = None,
                           username: str = None, phone_number: str = None,
@@ -243,6 +281,7 @@ async def upsert_contact(tg_account_id: int, user_id: int, first_name: str = Non
             )
 
 
+@retry_on_lock()
 async def update_contact_timestamps(tg_account_id: int, user_id: int,
                                      last_send_time: datetime = None,
                                      last_receive_time: datetime = None):
@@ -266,6 +305,7 @@ async def update_contact_timestamps(tg_account_id: int, user_id: int,
             )
 
 
+@retry_on_lock()
 async def update_contact_msg_counts(tg_account_id: int, user_id: int,
                                      total: int, account_sent: int, friend_sent: int):
     """Update contact message counts."""
@@ -283,6 +323,7 @@ async def update_contact_msg_counts(tg_account_id: int, user_id: int,
 # Chat messages
 # =============================================================================
 
+@retry_on_lock()
 async def insert_chat_message(tg_account_id: int, chat_id: int, message_id: int,
                                sender_user_id: int = None, is_outgoing: bool = False,
                                send_time: datetime = None, content_type: str = None,
@@ -411,6 +452,7 @@ async def get_pending_contacts_by_node(node_id: str) -> list[dict]:
             return await cur.fetchall()
 
 
+@retry_on_lock()
 async def update_contact_assign_status(assign_id: int, status: str,
                                         result_user_id: int = None,
                                         error_reason: str = None):
