@@ -37,6 +37,20 @@ POLL_INTERVAL = getattr(config, 'AUTO_REPLY_INTERVAL', 300)  # seconds
 # Telegram error text meaning the target user's account was deleted/deactivated
 USER_DELETED_ERR = 'The specified user was deleted'
 
+# Errors that mean this friend can no longer be messaged -> turn off the
+# friend's auto_reply (tg_contact.auto_reply = 0).
+# Note: 'ALLOW_PAYMENT_REQUIRED' also matches 'ALLOW_PAYMENT_REQUIRED_1'.
+AUTO_REPLY_DISABLE_ERRORS = (
+    'ALLOW_PAYMENT_REQUIRED',
+    'PRIVACY_PREMIUM_REQUIRED',
+    USER_DELETED_ERR,
+    'Lock wait timeout exceeded',
+)
+
+# Error that means the account's connection dropped -> remove from online list
+# and set offline.
+DISCONNECTED_ERR = 'Cannot send requests while disconnected'
+
 # System-level auto-reply switch (tg_system_config.auto_reply_enabled), cached briefly
 _AUTO_REPLY_CFG = {'value': True, 'ts': 0.0}
 _AUTO_REPLY_CFG_TTL = 30  # seconds
@@ -749,22 +763,25 @@ async def _mark_contact_deregistered(account_id: int, user_id: int, phone: str):
 async def _handle_send_failure(send_err, account_id: int, user_id: int, phone: str):
     """Post-processing after a send failure: react to specific Telegram errors."""
     err = str(send_err)
-    if 'PRIVACY_PREMIUM_REQUIRED' in err:
-        await _disable_contact_auto_reply(account_id, user_id, phone)
+    if DISCONNECTED_ERR in err:
+        await client_manager.handle_disconnected_account(phone)
+    if any(marker in err for marker in AUTO_REPLY_DISABLE_ERRORS):
+        await _disable_contact_auto_reply(account_id, user_id, phone, err)
     if USER_DELETED_ERR in err:
         await _mark_contact_deregistered(account_id, user_id, phone)
 
 
-async def _disable_contact_auto_reply(account_id: int, user_id: int, phone: str):
-    """Disable auto_reply for a specific contact when PRIVACY_PREMIUM_REQUIRED."""
+async def _disable_contact_auto_reply(account_id: int, user_id: int, phone: str, reason: str = ""):
+    """Disable auto_reply for a specific contact (tg_contact.auto_reply = 0)."""
     try:
         async with database.pool.acquire() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
-                    "UPDATE tg_contact SET auto_reply = 0 WHERE tg_account_id = %s AND user_id = %s",
+                    "UPDATE tg_contact SET auto_reply = 0, update_time = NOW() "
+                    "WHERE tg_account_id = %s AND user_id = %s",
                     (account_id, user_id)
                 )
-        logger.info(f"[{phone}] [AutoReply] 已关闭好友 {user_id} 的自动回复 (PRIVACY_PREMIUM_REQUIRED)")
+        logger.info(f"[{phone}] [AutoReply] 已关闭好友 {user_id} 的自动回复 (原因: {reason[:120]})")
     except Exception as e:
         logger.error(f"[{phone}] [AutoReply] 关闭好友自动回复失败: {e}")
 

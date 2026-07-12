@@ -25,6 +25,15 @@ logger = logging.getLogger(__name__)
 CONCURRENCY_LIMIT = 5
 MAX_RETRY_COUNT = 2  # After 2 retries, mark account as restricted
 
+# Error meaning the account's connection dropped -> remove from online list and set offline.
+DISCONNECTED_ERR = 'Cannot send requests while disconnected'
+
+
+async def _react_add_failure(err: str, phone: str):
+    """React to specific add-friend failures. Currently: account disconnected."""
+    if DISCONNECTED_ERR in err:
+        await client_manager.handle_disconnected_account(phone)
+
 
 def _normalize_phone(phone: str) -> str:
     """Ensure phone number has + prefix."""
@@ -145,6 +154,7 @@ async def _add_contacts_one_by_one(tg_client, phone: str, account_id: int, items
                 await database.update_contact_assign_status(
                     item["id"], "failed", error_reason=str(e)[:500]
                 )
+                await _react_add_failure(str(e), phone)
 
     tasks = [add_single(item) for item in items]
     results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -366,6 +376,7 @@ async def _batch_import_contacts(tg_client, phone: str, account_id: int, items: 
                         item["id"], "failed", error_reason=str(e)[:500]
                     )
                     logger.warning(f"[{phone}] Failed import by username {contact_username}: {e}")
+                    await _react_add_failure(str(e), phone)
 
         username_tasks = [add_by_username(item) for item in username_items]
         await asyncio.gather(*username_tasks, return_exceptions=True)
@@ -447,6 +458,7 @@ async def _batch_import_contacts(tg_client, phone: str, account_id: int, items: 
         )
     except Exception as e:
         logger.error(f"[{phone}] ImportContactsRequest failed: {e}")
+        await _react_add_failure(str(e), phone)
         for i, item in item_map.items():
             await database.update_contact_assign_status(
                 item["id"], "failed", error_reason=str(e)[:500]

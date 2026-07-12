@@ -545,6 +545,19 @@ async def logout_account(phone: str) -> dict:
     return {"phone": phone, "success": True}
 
 
+async def handle_disconnected_account(phone: str):
+    """A request failed with 'Cannot send requests while disconnected':
+    remove the account from the online list (active_clients) and mark offline."""
+    client = active_clients.pop(phone, None)
+    if client:
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
+    await database.update_account_status(phone, "offline")
+    logger.warning(f"[{phone}] 请求时检测到连接已断开, 已从在线列表移除并置为离线")
+
+
 async def disconnect_all():
     """Disconnect all active clients (for shutdown)."""
     phones = list(active_clients.keys())
