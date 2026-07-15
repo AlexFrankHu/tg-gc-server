@@ -330,7 +330,12 @@ async def insert_chat_message(tg_account_id: int, chat_id: int, message_id: int,
                                text_content: str = None, media_file_id: int = None,
                                media_file_size: int = None, media_mime_type: str = None,
                                node_id: str = None):
-    """Insert a chat message (ignore duplicates)."""
+    """Insert a chat message (ignore duplicates).
+
+    群消息(聊天ID为负数, 即群组/超级群/频道)不保存, 只保存私聊消息。
+    """
+    if chat_id is not None and chat_id < 0:
+        return
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
             await cur.execute(

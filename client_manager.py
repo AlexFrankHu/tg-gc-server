@@ -160,6 +160,37 @@ async def login_poll_loop():
             logger.error(f"Login poll error: {e}")
 
 
+async def logout_poll_loop():
+    """Background task: every 15s, logout accounts whose status is 'waitLogout' for this node."""
+    while True:
+        try:
+            await asyncio.sleep(config.LOGIN_POLL_INTERVAL)
+            await _process_wait_logout()
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.error(f"Logout poll error: {e}")
+
+
+async def _process_wait_logout():
+    """Find accounts with status 'waitLogout' for this node and log them out (release resources)."""
+    node_id = node_manager.NODE_ID
+    accounts = await database.get_accounts_by_node_and_status(node_id, "waitLogout")
+    if not accounts:
+        return
+
+    logger.info(f"Logout poll: found {len(accounts)} waitLogout accounts")
+    for acc in accounts:
+        phone = acc.get("phone")
+        if not phone:
+            continue
+        try:
+            await logout_account(phone)
+            logger.info(f"[{phone}] waitLogout 处理完成, 已登出并置为离线")
+        except Exception as e:
+            logger.error(f"[{phone}] waitLogout 登出失败: {e}")
+
+
 async def _process_pending_logins():
     """Find accounts with status login1/login2 for this node and login them."""
     node_id = node_manager.NODE_ID

@@ -1,7 +1,9 @@
 """Main application entry point - tg-gc-server (cluster node)."""
 import asyncio
+import glob
 import logging
 import os
+from datetime import datetime, timedelta
 from contextlib import asynccontextmanager
 
 import uvicorn
@@ -55,15 +57,17 @@ async def lifespan(app: FastAPI):
     # 4. Start background tasks
     heartbeat_task = asyncio.create_task(node_manager.heartbeat_loop())
     login_poll_task = asyncio.create_task(client_manager.login_poll_loop())
+    logout_poll_task = asyncio.create_task(client_manager.logout_poll_loop())
     auto_reply_task = asyncio.create_task(auto_reply.poll_auto_reply())
     contact_adder_task = asyncio.create_task(contact_adder.poll_contact_adder())
     sync_task = asyncio.create_task(_periodic_sync())
+    log_cleanup_task = asyncio.create_task(_log_cleanup_loop())
 
     yield
 
     # Cancel all tasks
-    for task in [heartbeat_task, login_poll_task, auto_reply_task,
-                 contact_adder_task, sync_task, restart_task]:
+    for task in [heartbeat_task, login_poll_task, logout_poll_task, auto_reply_task,
+                 contact_adder_task, sync_task, restart_task, log_cleanup_task]:
         task.cancel()
         try:
             await task
@@ -352,6 +356,40 @@ async def test_notify(title: str = "测试通知", content: str = "这是一条�
     """Test notification."""
     await notify.send_notification(title, content)
     return {"success": True}
+
+
+def _truncate_node_logs():
+    """Truncate this node's own log files (in LOGS_DIR) to 0 bytes.
+
+    app.log 由 logging FileHandler 以 append('a') 模式打开, truncate 到 0 后
+    后续写入仍从文件末尾(此时为0)开始, 不会产生空洞文件, 可安全就地清空并释放磁盘。
+    """
+    cleaned = 0
+    for path in glob.glob(os.path.join(config.LOGS_DIR, "*.log*")):
+        try:
+            with open(path, "w"):
+                pass
+            cleaned += 1
+        except Exception as e:
+            logger.error(f"清理日志失败 {path}: {e}")
+    logger.info(f"日志定时清理完成, 共清空 {cleaned} 个文件 (LOGS_DIR={config.LOGS_DIR})")
+
+
+async def _log_cleanup_loop():
+    """每天北京时间 20:00 清理本节点的日志。"""
+    while True:
+        try:
+            now = datetime.now(config.BEIJING_TZ)
+            target = now.replace(hour=20, minute=0, second=0, microsecond=0)
+            if target <= now:
+                target += timedelta(days=1)
+            await asyncio.sleep((target - now).total_seconds())
+            _truncate_node_logs()
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.error(f"日志定时清理任务异常: {e}")
+            await asyncio.sleep(60)
 
 
 async def _periodic_sync():
