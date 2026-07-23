@@ -62,7 +62,7 @@ async def init_db():
         charset="utf8mb4",
         autocommit=True,
         minsize=2,
-        maxsize=20,
+        maxsize=5,
         cursorclass=aiomysql.DictCursor,
     )
     logger.info(f"Database pool initialized: {config.DB_HOST}:{config.DB_PORT}/{config.DB_NAME}")
