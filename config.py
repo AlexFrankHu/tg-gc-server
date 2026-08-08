@@ -87,7 +87,7 @@ JWT_SECRET = os.getenv("JWT_SECRET", "tg-gc-secret-key-2026")
 JWT_EXPIRE_HOURS = int(os.getenv("JWT_EXPIRE_HOURS", "24"))
 
 # Auto-reply
-REPLY_API_URL = os.getenv("REPLY_API_URL", "http://172.22.16.41:8000/generate-reply")
+REPLY_API_URL = os.getenv("REPLY_API_URL", "http://172.22.16.41:8001/generate-reply")
 AUTO_REPLY_INTERVAL = int(os.getenv("AUTO_REPLY_INTERVAL", "25"))  # seconds
 
 # Intervals (seconds)
