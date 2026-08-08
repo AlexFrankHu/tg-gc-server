@@ -20,6 +20,7 @@ Environment=DB_HOST=${DB_HOST}
 ExecStart=/usr/bin/python3 main.py
 Restart=always
 RestartSec=10
+LimitNOFILE=65535
 StandardOutput=append:${WORKING_DIR}/logs/main.log
 StandardError=append:${WORKING_DIR}/logs/main.log
 

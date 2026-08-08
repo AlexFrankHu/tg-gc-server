@@ -1,7 +1,22 @@
+-- 强制使用 utf8mb4 导入, 否则客户端默认字符集会把中文二次编码成乱码
+SET NAMES utf8mb4;
+
 -- ============================================================
 -- TG-GC 集群版数据库初始化脚本
 -- 数据库: tg_gc
 -- 字符集: utf8mb4
+--
+-- 全新部署执行顺序 (缺一不可):
+--   1) tg-gc-server/sql/init.sql            本文件, 建库 + tg_* 业务表
+--   2) tg-gc-bg/sql/ry_20260417.sql         RuoYi 系统表 (需先 USE tg_gc)
+--   3) tg-gc-bg/sql/quartz.sql              定时任务表
+--   4) tg-gc-bg/sql/tg_account_group.sql
+--   5) tg-gc-bg/sql/tg_account_config.sql
+--   6) tg-gc-bg/sql/tg_menus.sql            后台菜单
+--   7) tg-gc-server/sql/schema_align.sql    补齐本文件缺失的表/列 (必须执行, 必须在索引脚本之前)
+--   8) tg-gc-bg/sql/tg_add_indexes_20260621.sql
+--
+-- 注意: 导入时必须带 --default-character-set=utf8mb4, 否则中文会被二次编码成乱码
 -- ============================================================
 
 CREATE DATABASE IF NOT EXISTS `tg_gc` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;
