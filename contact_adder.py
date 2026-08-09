@@ -1,7 +1,11 @@
 """Contact adder for tg-gc-server (cluster node).
 
 Polls every 15s for pending contacts assigned to this node.
-Supports two add methods:
+Two contact types:
+  - real: add to the account's TG contact list (importContacts / addContact)
+  - fake: only resolve the phone/username to a TG user and store it locally,
+          no contact is created on Telegram's side
+Real contacts support two add methods:
   - one_by_one: AddContactRequest per contact (individual add)
   - contact_import: ImportContactsRequest batch upload (address book style)
 Concurrent execution with error isolation per contact.
@@ -11,7 +15,9 @@ import logging
 import random
 from collections import defaultdict
 
-from telethon.tl.functions.contacts import ImportContactsRequest, AddContactRequest, GetContactsRequest
+from telethon.tl.functions.contacts import (
+    ImportContactsRequest, AddContactRequest, GetContactsRequest, ResolvePhoneRequest,
+)
 from telethon.tl.types import InputPhoneContact, InputUser
 
 import config
@@ -63,23 +69,25 @@ async def _process_pending_contacts():
     if not pending:
         return
 
-    # Group by (account_id, add_method)
-    by_account_method: dict[tuple[int, str], list[dict]] = defaultdict(list)
+    # Group by (account_id, add_method, contact_type)
+    by_account_method: dict[tuple[int, str, str], list[dict]] = defaultdict(list)
     for item in pending:
         account_id = item.get("tg_account_id") or item.get("account_id")
         add_method = item.get("add_method") or "one_by_one"
-        by_account_method[(account_id, add_method)].append(item)
+        contact_type = item.get("contact_type") or "real"
+        by_account_method[(account_id, add_method, contact_type)].append(item)
 
     # Process each group concurrently
     tasks = []
-    for (account_id, add_method), items in by_account_method.items():
-        tasks.append(_process_account_group(account_id, add_method, items))
+    for (account_id, add_method, contact_type), items in by_account_method.items():
+        tasks.append(_process_account_group(account_id, add_method, contact_type, items))
 
     if tasks:
         await asyncio.gather(*tasks, return_exceptions=True)
 
 
-async def _process_account_group(account_id: int, add_method: str, items: list[dict]):
+async def _process_account_group(account_id: int, add_method: str, contact_type: str,
+                                 items: list[dict]):
     """Process a group of contacts for one account with one add method."""
     account = await database.get_account_by_id(account_id)
     if not account:
@@ -122,10 +130,76 @@ async def _process_account_group(account_id: int, add_method: str, items: list[d
                 break
         return
 
-    if add_method in ("contact_import", "batch_import"):
+    if contact_type == "fake":
+        await _add_fake_contacts(tg_client, phone, account_id, items)
+    elif add_method in ("contact_import", "batch_import"):
         await _batch_import_contacts(tg_client, phone, account_id, items)
     else:
         await _add_contacts_one_by_one(tg_client, phone, account_id, items)
+
+
+async def _add_fake_contacts(tg_client, phone: str, account_id: int, items: list[dict]):
+    """Fake contacts: resolve the user and store it, without touching the TG contact list.
+
+    Exactly one Telegram request per item (contacts.resolvePhone for phones,
+    contacts.resolveUsername via get_entity for usernames). access_hash is persisted
+    because the user is not a contact and cannot be looked up again from getContacts.
+    """
+    node_id = node_manager.NODE_ID
+    semaphore = asyncio.Semaphore(CONCURRENCY_LIMIT)
+
+    async def resolve_single(item):
+        async with semaphore:
+            assign_id = item["id"]
+            contact_phone = _normalize_phone(item.get("contact_phone", ""))
+            contact_username = (item.get("contact_username") or "").strip().lstrip("@")
+            try:
+                if contact_phone:
+                    resolved = await tg_client(
+                        ResolvePhoneRequest(phone=contact_phone.replace("+", ""))
+                    )
+                    user = resolved.users[0] if resolved and resolved.users else None
+                elif contact_username:
+                    user = await tg_client.get_entity(contact_username)
+                else:
+                    await database.update_contact_assign_status(
+                        assign_id, "failed", error_reason="无手机号和用户名"
+                    )
+                    return
+
+                if not user:
+                    await database.update_contact_assign_status(
+                        assign_id, "failed", error_reason="号码未注册TG或隐私限制(伪好友仅解析)"
+                    )
+                    return
+
+                await database.upsert_contact(
+                    tg_account_id=account_id, user_id=user.id,
+                    access_hash=getattr(user, "access_hash", None),
+                    first_name=getattr(user, "first_name", None),
+                    last_name=getattr(user, "last_name", None),
+                    nickname=getattr(user, "first_name", ""),
+                    username=getattr(user, "username", None),
+                    phone_number=contact_phone or None,
+                    is_bot=bool(getattr(user, "bot", False)),
+                    is_premium=bool(getattr(user, "premium", False)),
+                    source="import", contact_type="fake", node_id=node_id,
+                )
+                await database.update_contact_assign_status(
+                    assign_id, "success", result_user_id=user.id
+                )
+                logger.info(f"[{phone}] Fake contact resolved: {contact_phone or contact_username} -> {user.id}")
+            except Exception as e:
+                logger.warning(f"[{phone}] Failed to resolve fake contact {contact_phone or contact_username}: {e}")
+                await database.update_contact_assign_status(
+                    assign_id, "failed", error_reason=str(e)[:500]
+                )
+                await _react_add_failure(str(e), phone)
+
+    results = await asyncio.gather(*[resolve_single(item) for item in items],
+                                   return_exceptions=True)
+    success_count = sum(1 for r in results if r is None)
+    logger.info(f"[{phone}] fake: {success_count}/{len(items)} resolved")
 
 
 async def _add_contacts_one_by_one(tg_client, phone: str, account_id: int, items: list[dict]):
@@ -179,6 +253,7 @@ async def _add_one_by_phone(tg_client, phone: str, account_id: int, node_id: str
                     logger.info(f"[{phone}] Already a contact: {contact_phone} -> {user.id}")
                     await database.upsert_contact(
                         tg_account_id=account_id, user_id=user.id,
+                        access_hash=getattr(user, "access_hash", None),
                         first_name=getattr(user, "first_name", None),
                         last_name=getattr(user, "last_name", None),
                         nickname=getattr(user, "first_name", ""),
@@ -204,6 +279,7 @@ async def _add_one_by_phone(tg_client, phone: str, account_id: int, node_id: str
         user = result.users[0]
         await database.upsert_contact(
             tg_account_id=account_id, user_id=user.id,
+            access_hash=getattr(user, "access_hash", None),
             first_name=getattr(user, "first_name", None),
             last_name=getattr(user, "last_name", None),
             nickname=getattr(user, "first_name", ""),
@@ -219,6 +295,7 @@ async def _add_one_by_phone(tg_client, phone: str, account_id: int, node_id: str
         logger.info(f"[{phone}] Already a contact via import: {contact_phone} -> {user.id}")
         await database.upsert_contact(
             tg_account_id=account_id, user_id=user.id,
+            access_hash=getattr(user, "access_hash", None),
             first_name=getattr(user, "first_name", None),
             last_name=getattr(user, "last_name", None),
             nickname=getattr(user, "first_name", ""),
@@ -231,7 +308,6 @@ async def _add_one_by_phone(tg_client, phone: str, account_id: int, node_id: str
     # Step 3: Fallback — ResolvePhoneRequest then AddContactRequest
     user = None
     try:
-        from telethon.tl.functions.contacts import ResolvePhoneRequest
         phone_clean = contact_phone.replace("+", "")
         resolved = await tg_client(ResolvePhoneRequest(phone=phone_clean))
         if resolved and resolved.users:
@@ -282,6 +358,7 @@ async def _add_one_by_phone(tg_client, phone: str, account_id: int, node_id: str
     ))
     await database.upsert_contact(
         tg_account_id=account_id, user_id=user.id,
+        access_hash=getattr(user, "access_hash", None),
         first_name=getattr(user, "first_name", None),
         last_name=getattr(user, "last_name", None),
         nickname=getattr(user, "first_name", ""),
@@ -315,6 +392,7 @@ async def _add_one_by_username(tg_client, phone: str, account_id: int, node_id: 
     ))
     await database.upsert_contact(
         tg_account_id=account_id, user_id=entity.id,
+        access_hash=getattr(entity, "access_hash", None),
         first_name=getattr(entity, "first_name", None),
         last_name=getattr(entity, "last_name", None),
         nickname=getattr(entity, "first_name", ""),
@@ -356,6 +434,7 @@ async def _batch_import_contacts(tg_client, phone: str, account_id: int, items: 
                         await database.upsert_contact(
                             tg_account_id=account_id,
                             user_id=entity.id,
+                            access_hash=getattr(entity, "access_hash", None),
                             first_name=getattr(entity, "first_name", None),
                             last_name=getattr(entity, "last_name", None),
                             nickname=getattr(entity, "first_name", ""),
@@ -413,6 +492,7 @@ async def _batch_import_contacts(tg_client, phone: str, account_id: int, items: 
                 await database.upsert_contact(
                     tg_account_id=account_id,
                     user_id=user.user_id,
+                    access_hash=getattr(tg_user, "access_hash", None),
                     first_name=getattr(tg_user, "first_name", None),
                     last_name=getattr(tg_user, "last_name", None),
                     nickname=getattr(tg_user, "first_name", ""),
