@@ -96,6 +96,9 @@ def _has_session_file(phone: str) -> bool:
 # Sessions produced by older Telethon (or other libraries) can carry a version
 # number that skips Telethon's own migration while the schema is still old,
 # e.g. "table entities has 5 columns but 6 values were supplied".
+# Must stay in sync with telethon.sessions.sqlite.CURRENT_VERSION.
+_SESSION_VERSION = 8
+
 _SESSION_COLUMNS = {
     "entities": [("date", "integer")],
     "sessions": [("takeout_id", "integer"), ("tmp_auth_key", "blob")],
@@ -120,8 +123,26 @@ _SESSION_TABLES = {
 }
 
 
+def _read_session_version(cur, tables: set) -> int:
+    """Return the schema version recorded in a .session file, -1 if unknown."""
+    if "version" not in tables:
+        return -1
+    cur.execute("select version from version")
+    row = cur.fetchone()
+    if not row or row[0] is None:
+        return -1
+    return int(row[0])
+
+
 def _fix_session_schema(phone: str) -> None:
-    """Add columns/tables missing from a legacy .session file (idempotent)."""
+    """Bring a legacy .session file up to the schema Telethon expects.
+
+    Telethon only migrates when the recorded version is below its own
+    CURRENT_VERSION, so a file whose version was bumped without the matching
+    DDL never gets repaired. Adding the columns here therefore also requires
+    bumping the version, otherwise Telethon replays its migration on top of
+    the repaired schema ("duplicate column name: tmp_auth_key").
+    """
     session_file = os.path.join(_get_account_dir(phone), phone + ".session")
     if not os.path.exists(session_file):
         return
@@ -134,6 +155,17 @@ def _fix_session_schema(phone: str) -> None:
         cur = conn.cursor()
         cur.execute("select name from sqlite_master where type='table'")
         tables = {row[0] for row in cur.fetchall()}
+        version = _read_session_version(cur, tables)
+
+        # Telethon drops the pre-v3 sent_files cache instead of migrating it.
+        if 0 <= version < 3 and "sent_files" in tables:
+            cur.execute("drop table sent_files")
+            tables.discard("sent_files")
+
+        # Telethon's 5 -> 6 step discards entities because their access hashes
+        # may be wrong; replicate it so a version bump stays equivalent.
+        if 0 <= version < 6 and "entities" in tables:
+            cur.execute("delete from entities")
 
         for table, columns in _SESSION_COLUMNS.items():
             if table not in tables:
@@ -151,6 +183,13 @@ def _fix_session_schema(phone: str) -> None:
                 continue
             cur.execute(f"create table {definition}")
             logger.warning(f"[{phone}] Session schema fixed: created table {table}")
+
+        if 0 <= version < _SESSION_VERSION and {"sessions", "entities"} <= tables:
+            cur.execute("delete from version")
+            cur.execute("insert into version values (?)", (_SESSION_VERSION,))
+            logger.warning(
+                f"[{phone}] Session schema fixed: version {version} -> {_SESSION_VERSION}"
+            )
 
         conn.commit()
     except sqlite3.Error as e:
