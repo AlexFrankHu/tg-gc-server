@@ -71,6 +71,7 @@ async def _sync_contacts(client, phone: str, account_id: int, node_id: str):
         await database.upsert_contact(
             tg_account_id=account_id,
             user_id=entity.id,
+            access_hash=getattr(entity, "access_hash", None),
             first_name=entity.first_name,
             last_name=entity.last_name,
             nickname=nickname,

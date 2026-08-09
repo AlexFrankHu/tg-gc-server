@@ -15,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 
 import httpx
 import aiomysql
-from telethon.tl.types import User
+from telethon.tl.types import InputPeerUser, User
 from telethon.errors import FloodWaitError
 
 import config
@@ -794,6 +794,7 @@ async def _send_auto_reply(client, phone: str, account_id: int,
     Supports [AIMG:url] tags: sends images first, then remaining text."""
     try:
         image_urls, remaining_text = _parse_reply_content(text)
+        peer = await _resolve_peer(account_id, user_id)
         last_sent_msg = None
 
         # Send images first
@@ -803,11 +804,11 @@ async def _send_auto_reply(client, phone: str, account_id: int,
                 img_path = await _download_image(img_url)
                 if img_path:
                     try:
-                        sent_msg = await client.send_file(user_id, img_path)
+                        sent_msg = await client.send_file(peer, img_path)
                     except FloodWaitError as e:
                         logger.warning(f"[{phone}] [AutoReply] FloodWait发送图片: 等待{e.seconds}s")
                         await asyncio.sleep(e.seconds + 5)
-                        sent_msg = await client.send_file(user_id, img_path)
+                        sent_msg = await client.send_file(peer, img_path)
                     last_sent_msg = sent_msg
                     logger.info(f"[{phone}] [AutoReply] 图片发送成功: user_id={user_id}, url={img_url}")
                     await _save_sent_message(phone, account_id, user_id, sent_msg, 'photo', f'[AIMG:{img_url}]')
@@ -827,12 +828,12 @@ async def _send_auto_reply(client, phone: str, account_id: int,
         # Send remaining text (only if non-empty)
         if remaining_text:
             try:
-                sent_msg = await client.send_message(user_id, remaining_text)
+                sent_msg = await client.send_message(peer, remaining_text)
             except FloodWaitError as e:
                 logger.warning(f"[{phone}] [AutoReply] FloodWait发送文字: 等待{e.seconds}s")
                 await asyncio.sleep(e.seconds + 5)
                 try:
-                    sent_msg = await client.send_message(user_id, remaining_text)
+                    sent_msg = await client.send_message(peer, remaining_text)
                 except Exception as e2:
                     raise Exception(f"FloodWait重试后仍失败: {e2}") from e2
             last_sent_msg = sent_msg
@@ -1015,6 +1016,20 @@ async def _build_chat_context(account_id: int, chat_id: int,
 # Database helpers
 # ---------------------------------------------------------------------------
 
+async def _resolve_peer(account_id: int, user_id: int):
+    """Peer to send to: InputPeerUser when access_hash is stored, else the raw id.
+
+    Fake contacts are not in the account's TG contact list, so the local Telethon
+    session may hold no cached entity for them; the stored access_hash is what makes
+    them addressable.
+    """
+    contact = await _get_contact(account_id, user_id)
+    access_hash = contact.get('access_hash') if contact else None
+    if access_hash:
+        return InputPeerUser(user_id=user_id, access_hash=access_hash)
+    return user_id
+
+
 async def _get_contact(account_id: int, user_id: int):
     async with database.pool.acquire() as conn:
         async with conn.cursor(aiomysql.DictCursor) as cur:
@@ -1183,6 +1198,7 @@ async def _send_greeting_reply(client, phone: str, account_id: int, user_id: int
     if not content and not image_path:
         return
 
+    peer = await _resolve_peer(account_id, user_id)
     sent_msg = None
     has_image = False
 
@@ -1192,16 +1208,16 @@ async def _send_greeting_reply(client, phone: str, account_id: int, user_id: int
         if not os.path.exists(actual_path):
             await _download_image_from_backend(image_path, actual_path)
         if os.path.exists(actual_path):
-            sent_msg = await client.send_file(user_id, actual_path, caption=content or '')
+            sent_msg = await client.send_file(peer, actual_path, caption=content or '')
             has_image = True
             logger.info(f"[{phone}] [AutoReply] 广告问候语(图片+文字)发送成功: user_id={user_id}")
         else:
             logger.warning(f"[{phone}] [AutoReply] 广告问候语图片不存在: {actual_path}, 仅发送文字")
             if content:
-                sent_msg = await client.send_message(user_id, content)
+                sent_msg = await client.send_message(peer, content)
     else:
         if content:
-            sent_msg = await client.send_message(user_id, content)
+            sent_msg = await client.send_message(peer, content)
             logger.info(f"[{phone}] [AutoReply] 广告问候语(文字)发送成功: user_id={user_id}")
 
     if not sent_msg:
