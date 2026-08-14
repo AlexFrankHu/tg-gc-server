@@ -88,7 +88,7 @@ JWT_EXPIRE_HOURS = int(os.getenv("JWT_EXPIRE_HOURS", "24"))
 
 # Auto-reply
 REPLY_API_URL = os.getenv("REPLY_API_URL", "http://172.22.0.43:8000/generate-reply")
-AUTO_REPLY_INTERVAL = int(os.getenv("AUTO_REPLY_INTERVAL", "25"))  # seconds
+AUTO_REPLY_INTERVAL = int(os.getenv("AUTO_REPLY_INTERVAL", "33"))  # seconds
 
 # Intervals (seconds)
 HEARTBEAT_INTERVAL = 15
