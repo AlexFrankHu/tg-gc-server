@@ -3,7 +3,7 @@
 # Usage: sudo MYSQL_PWD_TG='<password>' bash deploy/setup_arl_purge.sh [retention_days]
 set -e
 
-RETENTION_DAYS="${1:-3}"
+RETENTION_DAYS="${1:-1}"
 SRC_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 : "${MYSQL_PWD_TG:?set MYSQL_PWD_TG to the tg_gc MySQL root password}"

@@ -19,10 +19,10 @@ sudo bash deploy/setup_logrotate.sh
 ## MySQL 机器
 
 ```bash
-sudo MYSQL_PWD_TG='<password>' bash deploy/setup_arl_purge.sh 3
+sudo MYSQL_PWD_TG='<password>' bash deploy/setup_arl_purge.sh 1
 ```
 
-安装 `tg-arl-purge.timer`，每天 04:10 清理 `tg_auto_reply_log` 中超过 3 天的记录。
+安装 `tg-arl-purge.timer`，每天 04:10 清理 `tg_auto_reply_log` 中超过 1 天的记录。
 删除按 `create_time` 索引每批 2 万行、批间 sleep 0.3s，避免长事务锁表。
 
 该表写入量约 500 万行/天（2G/天），不清理一个月就会到 60G，同时加剧锁争用。
