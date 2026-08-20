@@ -252,17 +252,24 @@ async def upsert_contact(tg_account_id: int, user_id: int, first_name: str = Non
                           username: str = None, phone_number: str = None,
                           is_mutual: bool = False, is_bot: bool = False,
                           is_premium: bool = False, user_type: str = "regular",
-                          source: str = "natural", node_id: str = None):
-    """Insert or update a contact."""
+                          source: str = "natural", node_id: str = None,
+                          access_hash: int = None, contact_type: str = "real"):
+    """Insert or update a contact.
+
+    access_hash is required to message a fake contact (contact_type='fake'), which is
+    not in the account's TG contact list and therefore not guaranteed to be cached in
+    the local Telethon session.
+    """
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
                 """INSERT INTO tg_contact
-                   (tg_account_id, user_id, first_name, last_name, nickname,
+                   (tg_account_id, user_id, access_hash, first_name, last_name, nickname,
                     username, phone_number, is_mutual, is_bot, is_premium,
-                    user_type, source, node_id)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    user_type, source, contact_type, node_id)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                    ON DUPLICATE KEY UPDATE
+                       access_hash = COALESCE(VALUES(access_hash), access_hash),
                        first_name = VALUES(first_name),
                        last_name = VALUES(last_name),
                        nickname = VALUES(nickname),
@@ -274,9 +281,9 @@ async def upsert_contact(tg_account_id: int, user_id: int, first_name: str = Non
                        user_type = VALUES(user_type),
                        node_id = VALUES(node_id)""",
                 (
-                    tg_account_id, user_id, first_name, last_name, nickname,
+                    tg_account_id, user_id, access_hash, first_name, last_name, nickname,
                     username, phone_number, is_mutual, is_bot, is_premium,
-                    user_type, source, node_id,
+                    user_type, source, contact_type, node_id,
                 ),
             )
 
