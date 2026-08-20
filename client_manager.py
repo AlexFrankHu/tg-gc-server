@@ -11,6 +11,7 @@ import json
 import asyncio
 import logging
 import random
+import sqlite3
 from telethon import TelegramClient, events
 from telethon.errors import (
     SessionPasswordNeededError, PhoneCodeInvalidError,
@@ -89,6 +90,112 @@ def _has_session_file(phone: str) -> bool:
     """Check if .session file exists."""
     session_path = os.path.join(_get_account_dir(phone), phone + ".session")
     return os.path.exists(session_path)
+
+
+# Columns/tables Telethon's SQLiteSession expects at CURRENT_VERSION.
+# Sessions produced by older Telethon (or other libraries) can carry a version
+# number that skips Telethon's own migration while the schema is still old,
+# e.g. "table entities has 5 columns but 6 values were supplied".
+# Must stay in sync with telethon.sessions.sqlite.CURRENT_VERSION.
+_SESSION_VERSION = 8
+
+_SESSION_COLUMNS = {
+    "entities": [("date", "integer")],
+    "sessions": [("takeout_id", "integer"), ("tmp_auth_key", "blob")],
+}
+
+_SESSION_TABLES = {
+    "sent_files": """sent_files (
+        md5_digest blob,
+        file_size integer,
+        type integer,
+        id integer,
+        hash integer,
+        primary key(md5_digest, file_size, type)
+    )""",
+    "update_state": """update_state (
+        id integer primary key,
+        pts integer,
+        qts integer,
+        date integer,
+        seq integer
+    )""",
+}
+
+
+def _read_session_version(cur, tables: set) -> int:
+    """Return the schema version recorded in a .session file, -1 if unknown."""
+    if "version" not in tables:
+        return -1
+    cur.execute("select version from version")
+    row = cur.fetchone()
+    if not row or row[0] is None:
+        return -1
+    return int(row[0])
+
+
+def _fix_session_schema(phone: str) -> None:
+    """Bring a legacy .session file up to the schema Telethon expects.
+
+    Telethon only migrates when the recorded version is below its own
+    CURRENT_VERSION, so a file whose version was bumped without the matching
+    DDL never gets repaired. Adding the columns here therefore also requires
+    bumping the version, otherwise Telethon replays its migration on top of
+    the repaired schema ("duplicate column name: tmp_auth_key").
+    """
+    session_file = os.path.join(_get_account_dir(phone), phone + ".session")
+    if not os.path.exists(session_file):
+        return
+    try:
+        conn = sqlite3.connect(session_file, timeout=10)
+    except sqlite3.Error as e:
+        logger.error(f"[{phone}] Cannot open session file for schema check: {e}")
+        return
+    try:
+        cur = conn.cursor()
+        cur.execute("select name from sqlite_master where type='table'")
+        tables = {row[0] for row in cur.fetchall()}
+        version = _read_session_version(cur, tables)
+
+        # Telethon drops the pre-v3 sent_files cache instead of migrating it.
+        if 0 <= version < 3 and "sent_files" in tables:
+            cur.execute("drop table sent_files")
+            tables.discard("sent_files")
+
+        # Telethon's 5 -> 6 step discards entities because their access hashes
+        # may be wrong; replicate it so a version bump stays equivalent.
+        if 0 <= version < 6 and "entities" in tables:
+            cur.execute("delete from entities")
+
+        for table, columns in _SESSION_COLUMNS.items():
+            if table not in tables:
+                continue
+            cur.execute(f"pragma table_info({table})")
+            existing = {row[1] for row in cur.fetchall()}
+            for column, column_type in columns:
+                if column in existing:
+                    continue
+                cur.execute(f"alter table {table} add column {column} {column_type}")
+                logger.warning(f"[{phone}] Session schema fixed: added {table}.{column}")
+
+        for table, definition in _SESSION_TABLES.items():
+            if table in tables:
+                continue
+            cur.execute(f"create table {definition}")
+            logger.warning(f"[{phone}] Session schema fixed: created table {table}")
+
+        if 0 <= version < _SESSION_VERSION and {"sessions", "entities"} <= tables:
+            cur.execute("delete from version")
+            cur.execute("insert into version values (?)", (_SESSION_VERSION,))
+            logger.warning(
+                f"[{phone}] Session schema fixed: version {version} -> {_SESSION_VERSION}"
+            )
+
+        conn.commit()
+    except sqlite3.Error as e:
+        logger.error(f"[{phone}] Failed to fix session schema: {e}")
+    finally:
+        conn.close()
 
 
 def _build_device_kwargs(data: dict) -> dict:
@@ -314,6 +421,8 @@ async def login_account_by_phone(phone: str, use_proxy: bool = True) -> dict:
             node_id=node_id
         )
         return {"phone": phone, "success": False, "error": "No session file"}
+
+    _fix_session_schema(phone)
 
     # Determine api_id, api_hash, device kwargs
     json_data = _read_account_json(phone)

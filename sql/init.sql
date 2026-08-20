@@ -1,7 +1,22 @@
+-- 强制使用 utf8mb4 导入, 否则客户端默认字符集会把中文二次编码成乱码
+SET NAMES utf8mb4;
+
 -- ============================================================
 -- TG-GC 集群版数据库初始化脚本
 -- 数据库: tg_gc
 -- 字符集: utf8mb4
+--
+-- 全新部署执行顺序 (缺一不可):
+--   1) tg-gc-server/sql/init.sql            本文件, 建库 + tg_* 业务表
+--   2) tg-gc-bg/sql/ry_20260417.sql         RuoYi 系统表 (需先 USE tg_gc)
+--   3) tg-gc-bg/sql/quartz.sql              定时任务表
+--   4) tg-gc-bg/sql/tg_account_group.sql
+--   5) tg-gc-bg/sql/tg_account_config.sql
+--   6) tg-gc-bg/sql/tg_menus.sql            后台菜单
+--   7) tg-gc-server/sql/schema_align.sql    补齐本文件缺失的表/列 (必须执行, 必须在索引脚本之前)
+--   8) tg-gc-bg/sql/tg_add_indexes_20260621.sql
+--
+-- 注意: 导入时必须带 --default-character-set=utf8mb4, 否则中文会被二次编码成乱码
 -- ============================================================
 
 CREATE DATABASE IF NOT EXISTS `tg_gc` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;
@@ -78,6 +93,7 @@ CREATE TABLE IF NOT EXISTS `tg_contact` (
     `id`                    INT             AUTO_INCREMENT PRIMARY KEY,
     `tg_account_id`         INT             NOT NULL    COMMENT '所属账号ID',
     `user_id`               BIGINT          NOT NULL    COMMENT '好友的Telegram用户ID',
+    `access_hash`           BIGINT          DEFAULT NULL COMMENT 'TG access_hash(发消息构造 InputPeerUser 用)',
     `first_name`            VARCHAR(255)    DEFAULT NULL,
     `last_name`             VARCHAR(255)    DEFAULT NULL,
     `nickname`              VARCHAR(255)    DEFAULT NULL COMMENT '昵称',
@@ -92,6 +108,7 @@ CREATE TABLE IF NOT EXISTS `tg_contact` (
     `last_receive_time`     DATETIME        DEFAULT NULL COMMENT '最后接收时间(好友→账号)',
     `auto_reply`            TINYINT(1)      DEFAULT 1   COMMENT '是否开启自动回复',
     `source`                VARCHAR(20)     DEFAULT 'natural' COMMENT '来源: import/natural',
+    `contact_type`          VARCHAR(10)     NOT NULL DEFAULT 'real' COMMENT '好友类型: real=好友, fake=伪好友(仅解析未加联系人)',
     `total_msg_count`       INT             DEFAULT 0   COMMENT '消息总数',
     `account_sent_count`    INT             DEFAULT 0   COMMENT '账号发送数',
     `friend_sent_count`     INT             DEFAULT 0   COMMENT '好友发送数',
@@ -178,6 +195,7 @@ CREATE TABLE IF NOT EXISTS `tg_contact_assign_log` (
     `contact_phone`     VARCHAR(50)     DEFAULT NULL COMMENT '待添加好友手机号',
     `contact_username`  VARCHAR(200)    DEFAULT NULL COMMENT '待添加好友用户名',
     `import_type`       VARCHAR(20)     DEFAULT 'phone' COMMENT '导入类型: phone/username',
+    `contact_type`      VARCHAR(10)     NOT NULL DEFAULT 'real' COMMENT '好友类型: real=好友, fake=伪好友',
     `batch_no`          VARCHAR(64)     DEFAULT NULL COMMENT '联系人导入批次号',
     `status`            VARCHAR(20)     DEFAULT 'pending' COMMENT '状态: pending/processing/success/failed',
     `retry_count`       INT             DEFAULT 0   COMMENT '重试次数',
