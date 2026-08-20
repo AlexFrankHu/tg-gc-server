@@ -298,7 +298,22 @@ async def _process_proactive_replies():
     if not contacts:
         return
 
-    logger.info(f"Auto-reply poll: {len(contacts)} eligible contacts")
+    # Contacts that never exchanged a message are the state=1 openings, which
+    # come from tg_opening and need no reply-api call. Handle them first,
+    # otherwise they queue behind thousands of reply-api round trips and a poll
+    # cycle takes tens of minutes before the first opening goes out.
+    openings = [
+        r for r in contacts
+        if r.get('last_send_time') is None and r.get('last_receive_time') is None
+    ]
+    rest = [
+        r for r in contacts
+        if not (r.get('last_send_time') is None and r.get('last_receive_time') is None)
+    ]
+    contacts = openings + rest
+
+    logger.info(f"Auto-reply poll: {len(contacts)} eligible contacts "
+                f"({len(openings)} openings first)")
 
     # Track accounts that already attempted a proactive send this cycle.
     # 每轮单账号只给一个好友发消息(不论成功/失败均计入), 降低封号风险
