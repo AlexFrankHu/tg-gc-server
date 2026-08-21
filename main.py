@@ -20,6 +20,7 @@ import auth
 import auto_reply
 import contact_adder
 import node_manager
+import tl_compat
 import watchdog
 
 # Setup logging
@@ -39,6 +40,9 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     """Application startup and shutdown."""
     logger.info("Starting tg-gc-server (cluster node)...")
+
+    # Install TL compatibility patches (must run before any Telegram client)
+    tl_compat.install()
 
     # 0. Start watchdog thread (monitors event loop health)
     watchdog.start()
