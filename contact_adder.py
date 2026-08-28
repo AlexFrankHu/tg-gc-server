@@ -24,6 +24,7 @@ import config
 import database
 import node_manager
 import client_manager
+import tg_errors
 import watchdog
 
 logger = logging.getLogger(__name__)
@@ -35,10 +36,17 @@ MAX_RETRY_COUNT = 2  # After 2 retries, mark account as restricted
 DISCONNECTED_ERR = 'Cannot send requests while disconnected'
 
 
-async def _react_add_failure(err: str, phone: str):
-    """React to specific add-friend failures. Currently: account disconnected."""
+async def _react_add_failure(err: str, phone: str, account_id: int | None = None):
+    """React to specific add-friend failures: disconnect, TG freeze, restriction."""
     if DISCONNECTED_ERR in err:
         await client_manager.handle_disconnected_account(phone)
+    if account_id is None:
+        return
+    if tg_errors.is_frozen_error(err):
+        await database.mark_account_frozen(account_id, phone)
+    elif tg_errors.is_restrict_error(err):
+        await database.mark_account_restricted(account_id, phone)
+        logger.warning(f"[{phone}] 加好友返回 PEER_ID_INVALID, 已标记账号受限")
 
 
 def _normalize_phone(phone: str) -> str:
@@ -100,9 +108,9 @@ async def _process_account_group(account_id: int, add_method: str, contact_type:
 
     phone = account["phone"]
 
-    # Skip restricted accounts — do not add contacts, mark pending as failed
-    if account.get("is_restricted"):
-        logger.info(f"[{phone}] Account is restricted, marking pending records as failed")
+    # Skip restricted or frozen accounts — do not add contacts, mark pending as failed
+    if database.is_account_blocked(account):
+        logger.info(f"[{phone}] Account is restricted/frozen, marking pending records as failed")
         node_id = node_manager.NODE_ID
         await database.fail_pending_contacts_for_account(
             account_id, node_id, "账号已被限制，无法添加好友"
@@ -194,7 +202,7 @@ async def _add_fake_contacts(tg_client, phone: str, account_id: int, items: list
                 await database.update_contact_assign_status(
                     assign_id, "failed", error_reason=str(e)[:500]
                 )
-                await _react_add_failure(str(e), phone)
+                await _react_add_failure(str(e), phone, account_id)
 
     results = await asyncio.gather(*[resolve_single(item) for item in items],
                                    return_exceptions=True)
@@ -228,7 +236,7 @@ async def _add_contacts_one_by_one(tg_client, phone: str, account_id: int, items
                 await database.update_contact_assign_status(
                     item["id"], "failed", error_reason=str(e)[:500]
                 )
-                await _react_add_failure(str(e), phone)
+                await _react_add_failure(str(e), phone, account_id)
 
     tasks = [add_single(item) for item in items]
     results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -455,7 +463,7 @@ async def _batch_import_contacts(tg_client, phone: str, account_id: int, items: 
                         item["id"], "failed", error_reason=str(e)[:500]
                     )
                     logger.warning(f"[{phone}] Failed import by username {contact_username}: {e}")
-                    await _react_add_failure(str(e), phone)
+                    await _react_add_failure(str(e), phone, account_id)
 
         username_tasks = [add_by_username(item) for item in username_items]
         await asyncio.gather(*username_tasks, return_exceptions=True)
@@ -538,7 +546,7 @@ async def _batch_import_contacts(tg_client, phone: str, account_id: int, items: 
         )
     except Exception as e:
         logger.error(f"[{phone}] ImportContactsRequest failed: {e}")
-        await _react_add_failure(str(e), phone)
+        await _react_add_failure(str(e), phone, account_id)
         for i, item in item_map.items():
             await database.update_contact_assign_status(
                 item["id"], "failed", error_reason=str(e)[:500]

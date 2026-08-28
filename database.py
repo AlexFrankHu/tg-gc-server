@@ -114,11 +114,12 @@ async def get_accounts_by_node_and_status(node_id: str, status: str) -> list[dic
 
 
 async def get_restricted_accounts_by_node(node_id: str) -> list[dict]:
-    """Get accounts that are restricted (is_restricted=1) for a node, regardless of status."""
+    """Get accounts that are restricted or frozen for a node, regardless of status."""
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
-                "SELECT * FROM tg_telethon_account WHERE node_id = %s AND is_restricted = 1 AND status != 'online' AND is_deleted = 0",
+                "SELECT * FROM tg_telethon_account WHERE node_id = %s AND (is_restricted = 1 OR is_frozen = 1) "
+                "AND status != 'online' AND is_deleted = 0",
                 (node_id,),
             )
             return await cur.fetchall()
@@ -509,6 +510,25 @@ async def mark_account_restricted(account_id: int, phone: str):
                    WHERE id = %s""",
                 (account_id,),
             )
+
+
+async def mark_account_frozen(account_id: int, phone: str):
+    """Mark an account as frozen by Telegram. A frozen account is always restricted too."""
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """UPDATE tg_telethon_account SET
+                       is_frozen = 1, is_restricted = 1, update_time = NOW()
+                   WHERE id = %s AND (is_frozen = 0 OR is_frozen IS NULL)""",
+                (account_id,),
+            )
+            if cur.rowcount:
+                logger.warning("[%s] 账号被TG冻结(frozen), 已标记 is_frozen=1 + is_restricted=1", phone)
+
+
+def is_account_blocked(account: dict) -> bool:
+    """An account must not perform any Telegram action when restricted or frozen."""
+    return bool(account.get("is_restricted") or account.get("is_frozen"))
 
 
 async def fail_pending_contacts_for_account(account_id: int, node_id: str, error_reason: str):
