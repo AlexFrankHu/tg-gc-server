@@ -71,6 +71,7 @@ CREATE TABLE IF NOT EXISTS `tg_telethon_account` (
     `proxy_password`    VARCHAR(200)    DEFAULT NULL    COMMENT '代理认证密码',
     `auto_reply`        TINYINT(1)      DEFAULT 1       COMMENT '是否开启自动回复',
     `is_restricted`     TINYINT(1)      DEFAULT 0       COMMENT '是否被限制',
+    `is_frozen`         TINYINT(1)      DEFAULT 0       COMMENT '是否被TG冻结(frozen), 冻结账号一定同时被限制',
     `total_msg_count`   INT             DEFAULT 0       COMMENT '消息总数',
     `sent_msg_count`    INT             DEFAULT 0       COMMENT '发送总数',
     `recv_msg_count`    INT             DEFAULT 0       COMMENT '接收总数',

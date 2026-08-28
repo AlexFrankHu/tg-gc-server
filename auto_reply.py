@@ -23,6 +23,7 @@ from config import to_beijing
 import database
 import client_manager
 import node_manager
+import tg_errors
 import watchdog
 
 logger = logging.getLogger(__name__)
@@ -105,8 +106,8 @@ async def handle_incoming_message(phone: str, event, client):
         if not account.get('auto_reply', 1):
             logger.info(f"[{phone}] [AutoReply] 跳过: 账号未开启自动回复")
             return
-        if account.get('is_restricted', 0):
-            logger.info(f"[{phone}] [AutoReply] 跳过: 账号被限制")
+        if database.is_account_blocked(account):
+            logger.info(f"[{phone}] [AutoReply] 跳过: 账号被限制/冻结")
             return
         account_id = account['id']
 
@@ -778,6 +779,11 @@ async def _mark_contact_deregistered(account_id: int, user_id: int, phone: str):
 async def _handle_send_failure(send_err, account_id: int, user_id: int, phone: str):
     """Post-processing after a send failure: react to specific Telegram errors."""
     err = str(send_err)
+    if tg_errors.is_frozen_error(err):
+        await database.mark_account_frozen(account_id, phone)
+    elif tg_errors.is_restrict_error(err):
+        await database.mark_account_restricted(account_id, phone)
+        logger.warning(f"[{phone}] [AutoReply] 发送返回 PEER_ID_INVALID, 已标记账号受限")
     if DISCONNECTED_ERR in err:
         await client_manager.handle_disconnected_account(phone)
     if any(marker in err for marker in AUTO_REPLY_DISABLE_ERRORS):
@@ -1078,6 +1084,7 @@ async def _get_eligible_contacts() -> list:
           AND a.node_id = %s
           AND (a.is_deleted = 0 OR a.is_deleted IS NULL)
           AND (a.is_restricted = 0 OR a.is_restricted IS NULL)
+          AND (a.is_frozen = 0 OR a.is_frozen IS NULL)
           AND (
               c.last_send_time IS NULL
               OR c.last_receive_time IS NULL
