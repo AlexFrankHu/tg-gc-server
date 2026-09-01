@@ -21,6 +21,15 @@ FROZEN_ERROR_MARKERS = (
     'not available for frozen accounts',
 )
 
+# contacts.resolvePhone found no user for the phone number (PHONE_NOT_OCCUPIED).
+# A single occurrence is a dead number; many in a row mean Telegram stopped
+# resolving phones for this account, so the account itself is unusable.
+NOT_OCCUPIED_ERROR_MARKERS = (
+    'PHONE_NOT_OCCUPIED',
+    'No user is associated to the specified phone',
+    '号码未注册TG',
+)
+
 
 def is_frozen_error(err: str) -> bool:
     return any(marker in err for marker in FROZEN_ERROR_MARKERS)
@@ -28,3 +37,7 @@ def is_frozen_error(err: str) -> bool:
 
 def is_restrict_error(err: str) -> bool:
     return any(marker in err for marker in RESTRICT_ERROR_MARKERS)
+
+
+def is_not_occupied_error(err: str) -> bool:
+    return any(marker in err for marker in NOT_OCCUPIED_ERROR_MARKERS)
