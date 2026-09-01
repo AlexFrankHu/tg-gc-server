@@ -31,6 +31,12 @@ logger = logging.getLogger(__name__)
 
 CONCURRENCY_LIMIT = 5
 MAX_RETRY_COUNT = 2  # After 2 retries, mark account as restricted
+# Consecutive "phone not occupied" results after which the account itself is
+# considered unable to resolve phones anymore and is marked restricted.
+NOT_OCCUPIED_RESTRICT_LIMIT = 3
+
+# account_id -> consecutive "phone not occupied" results, cleared once a phone resolves.
+_not_occupied_streak: dict[int, int] = {}
 
 # Error meaning the account's connection dropped -> remove from online list and set offline.
 DISCONNECTED_ERR = 'Cannot send requests while disconnected'
@@ -47,6 +53,32 @@ async def _react_add_failure(err: str, phone: str, account_id: int | None = None
     elif tg_errors.is_restrict_error(err):
         await database.mark_account_restricted(account_id, phone)
         logger.warning(f"[{phone}] 加好友返回 PEER_ID_INVALID, 已标记账号受限")
+    elif tg_errors.is_not_occupied_error(err):
+        await _restrict_if_never_resolves(phone, account_id)
+
+
+def _note_phone_resolved(account_id: int):
+    """A phone resolved for this account, so it is not blind: clear the streak."""
+    _not_occupied_streak.pop(account_id, None)
+
+
+async def _restrict_if_never_resolves(phone: str, account_id: int):
+    """Restrict the account after NOT_OCCUPIED_RESTRICT_LIMIT consecutive resolves that
+    all report no Telegram user: Telegram stopped resolving phones for this account.
+    """
+    streak = _not_occupied_streak.get(account_id, 0) + 1
+    _not_occupied_streak[account_id] = streak
+    if streak < NOT_OCCUPIED_RESTRICT_LIMIT:
+        return
+    _not_occupied_streak.pop(account_id, None)
+    await database.mark_account_restricted(account_id, phone)
+    await database.fail_pending_contacts_for_account(
+        account_id, node_manager.NODE_ID,
+        f"账号连续{NOT_OCCUPIED_RESTRICT_LIMIT}次解析号码均无TG用户，标记为受限",
+    )
+    logger.warning(
+        f"[{phone}] 连续{NOT_OCCUPIED_RESTRICT_LIMIT}次解析号码均返回无TG用户, 已标记账号受限"
+    )
 
 
 def _normalize_phone(phone: str) -> str:
@@ -179,6 +211,7 @@ async def _add_fake_contacts(tg_client, phone: str, account_id: int, items: list
                     await database.update_contact_assign_status(
                         assign_id, "failed", error_reason="号码未注册TG或隐私限制(伪好友仅解析)"
                     )
+                    await _restrict_if_never_resolves(phone, account_id)
                     return
 
                 await database.upsert_contact(
@@ -196,6 +229,7 @@ async def _add_fake_contacts(tg_client, phone: str, account_id: int, items: list
                 await database.update_contact_assign_status(
                     assign_id, "success", result_user_id=user.id
                 )
+                _note_phone_resolved(account_id)
                 logger.info(f"[{phone}] Fake contact resolved: {contact_phone or contact_username} -> {user.id}")
             except Exception as e:
                 logger.warning(f"[{phone}] Failed to resolve fake contact {contact_phone or contact_username}: {e}")
@@ -295,6 +329,7 @@ async def _add_one_by_phone(tg_client, phone: str, account_id: int, node_id: str
             phone_number=contact_phone, source="import", node_id=node_id,
         )
         await database.update_contact_assign_status(assign_id, "success", result_user_id=user.id)
+        _note_phone_resolved(account_id)
         logger.info(f"[{phone}] Added contact by phone: {contact_phone} -> {user.id}")
         return
 
@@ -353,9 +388,11 @@ async def _add_one_by_phone(tg_client, phone: str, account_id: int, node_id: str
         else:
             await database.update_contact_assign_status(assign_id, "failed", error_reason="号码未注册TG或无法添加")
             logger.warning(f"[{phone}] Cannot find user for {contact_phone}")
+            await _restrict_if_never_resolves(phone, account_id)
         return
 
     # Found user via fallback, add via AddContactRequest with proper InputUser
+    _note_phone_resolved(account_id)
     input_user = InputUser(user_id=user.id, access_hash=user.access_hash)
     await tg_client(AddContactRequest(
         id=input_user,
