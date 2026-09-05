@@ -14,7 +14,12 @@ import tempfile
 
 import httpx
 from telethon.tl.functions.account import UpdateProfileRequest
-from telethon.tl.functions.photos import UploadProfilePhotoRequest
+from telethon.tl.functions.photos import (
+    DeletePhotosRequest,
+    GetUserPhotosRequest,
+    UploadProfilePhotoRequest,
+)
+from telethon.tl.types import InputPhoto, PhotoEmpty
 
 import config
 import database
@@ -117,6 +122,7 @@ async def _do_avatar(client, phone: str, param: dict):
     os.close(fd)
     try:
         await _download_from_backend(file_path, local_path)
+        await _delete_all_profile_photos(client)
         uploaded = await client.upload_file(local_path)
         await client(UploadProfilePhotoRequest(file=uploaded))
     finally:
@@ -124,6 +130,23 @@ async def _do_avatar(client, phone: str, param: dict):
             os.remove(local_path)
         except OSError:
             pass
+
+
+async def _delete_all_profile_photos(client):
+    while True:
+        result = await client(GetUserPhotosRequest(
+            user_id="me", offset=0, max_id=0, limit=100
+        ))
+        photos = [p for p in result.photos if not isinstance(p, PhotoEmpty)]
+        if not photos:
+            return
+        await client(DeletePhotosRequest(id=[
+            InputPhoto(id=p.id, access_hash=p.access_hash,
+                       file_reference=p.file_reference)
+            for p in photos
+        ]))
+        if len(result.photos) < 100:
+            return
 
 
 async def _do_twofa(client, phone: str, account: dict, param: dict):
