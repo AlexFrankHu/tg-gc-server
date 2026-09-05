@@ -22,6 +22,7 @@ import contact_adder
 import node_manager
 import tl_compat
 import watchdog
+import account_task
 
 # Setup logging
 os.makedirs(config.LOGS_DIR, exist_ok=True)
@@ -64,6 +65,7 @@ async def lifespan(app: FastAPI):
     logout_poll_task = asyncio.create_task(client_manager.logout_poll_loop())
     auto_reply_task = asyncio.create_task(auto_reply.poll_auto_reply())
     contact_adder_task = asyncio.create_task(contact_adder.poll_contact_adder())
+    account_task_task = asyncio.create_task(account_task.poll_account_tasks())
     sync_task = asyncio.create_task(_periodic_sync())
     log_cleanup_task = asyncio.create_task(_log_cleanup_loop())
 
@@ -71,7 +73,7 @@ async def lifespan(app: FastAPI):
 
     # Cancel all tasks
     for task in [heartbeat_task, login_poll_task, logout_poll_task, auto_reply_task,
-                 contact_adder_task, sync_task, restart_task, log_cleanup_task]:
+                 contact_adder_task, account_task_task, sync_task, restart_task, log_cleanup_task]:
         task.cancel()
         try:
             await task

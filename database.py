@@ -545,6 +545,54 @@ async def fail_pending_contacts_for_account(account_id: int, node_id: str, error
 
 
 # =============================================================================
+# Account tasks (修改昵称/头像/2FA, 后台下发 -> 节点执行)
+# =============================================================================
+
+async def get_pending_account_tasks(node_id: str) -> list[dict]:
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """SELECT id, account_id, phone, task_type, param
+                   FROM tg_account_task
+                   WHERE node_id = %s AND status = 'pending'
+                   ORDER BY id LIMIT 200""",
+                (node_id,),
+            )
+            return await cur.fetchall()
+
+
+@retry_on_lock()
+async def finish_account_task(task_id: int, status: str, error_reason: str | None):
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """UPDATE tg_account_task SET status = %s, error_reason = %s, update_time = NOW()
+                   WHERE id = %s""",
+                (status, error_reason, task_id),
+            )
+
+
+@retry_on_lock()
+async def update_account_nickname(phone: str, nickname: str):
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE tg_telethon_account SET nickname = %s, update_time = NOW() WHERE phone = %s",
+                (nickname, phone),
+            )
+
+
+@retry_on_lock()
+async def update_account_twofa_password(phone: str, password: str):
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE tg_telethon_account SET twofa_password = %s, update_time = NOW() WHERE phone = %s",
+                (password, phone),
+            )
+
+
+# =============================================================================
 # Greetings / Opening
 # =============================================================================
 
