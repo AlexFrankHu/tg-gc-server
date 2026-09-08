@@ -30,6 +30,11 @@ import watchdog
 logger = logging.getLogger(__name__)
 
 CONCURRENCY_LIMIT = 5
+# A single Telegram request must answer within this many seconds; a client stuck in
+# an endless reconnect otherwise blocks the whole poll round for every other account.
+REQUEST_TIMEOUT = 60
+# Upper bound for processing one account's pending items in a poll round.
+ACCOUNT_GROUP_TIMEOUT = 300
 MAX_RETRY_COUNT = 2  # After 2 retries, mark account as restricted
 # Consecutive "phone not occupied" results after which the account itself is
 # considered unable to resolve phones anymore and is marked restricted.
@@ -120,10 +125,28 @@ async def _process_pending_contacts():
     # Process each group concurrently
     tasks = []
     for (account_id, add_method, contact_type), items in by_account_method.items():
-        tasks.append(_process_account_group(account_id, add_method, contact_type, items))
+        tasks.append(_process_account_group_bounded(account_id, add_method, contact_type, items))
 
     if tasks:
         await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def _process_account_group_bounded(account_id: int, add_method: str, contact_type: str,
+                                         items: list[dict]):
+    try:
+        await asyncio.wait_for(
+            _process_account_group(account_id, add_method, contact_type, items),
+            timeout=ACCOUNT_GROUP_TIMEOUT,
+        )
+    except asyncio.TimeoutError:
+        account = await database.get_account_by_id(account_id)
+        phone = account["phone"] if account else str(account_id)
+        logger.warning(f"[{phone}] Processing {len(items)} pending contacts exceeded "
+                       f"{ACCOUNT_GROUP_TIMEOUT}s, skipping this round")
+        tg_client = client_manager.active_clients.get(phone)
+        if tg_client and not tg_client.is_connected():
+            client_manager.active_clients.pop(phone, None)
+            await database.update_account_status(phone, "offline")
 
 
 async def _process_account_group(account_id: int, add_method: str, contact_type: str,
@@ -195,12 +218,15 @@ async def _add_fake_contacts(tg_client, phone: str, account_id: int, items: list
             contact_username = (item.get("contact_username") or "").strip().lstrip("@")
             try:
                 if contact_phone:
-                    resolved = await tg_client(
-                        ResolvePhoneRequest(phone=contact_phone.replace("+", ""))
+                    resolved = await asyncio.wait_for(
+                        tg_client(ResolvePhoneRequest(phone=contact_phone.replace("+", ""))),
+                        timeout=REQUEST_TIMEOUT,
                     )
                     user = resolved.users[0] if resolved and resolved.users else None
                 elif contact_username:
-                    user = await tg_client.get_entity(contact_username)
+                    user = await asyncio.wait_for(
+                        tg_client.get_entity(contact_username), timeout=REQUEST_TIMEOUT
+                    )
                 else:
                     await database.update_contact_assign_status(
                         assign_id, "failed", error_reason="无手机号和用户名"
@@ -231,6 +257,12 @@ async def _add_fake_contacts(tg_client, phone: str, account_id: int, items: list
                 )
                 _note_phone_resolved(account_id)
                 logger.info(f"[{phone}] Fake contact resolved: {contact_phone or contact_username} -> {user.id}")
+            except asyncio.TimeoutError:
+                logger.warning(f"[{phone}] Resolve fake contact {contact_phone or contact_username} "
+                               f"timed out after {REQUEST_TIMEOUT}s")
+                await database.update_contact_assign_status(
+                    assign_id, "failed", error_reason=f"TG请求超时({REQUEST_TIMEOUT}s)"
+                )
             except Exception as e:
                 logger.warning(f"[{phone}] Failed to resolve fake contact {contact_phone or contact_username}: {e}")
                 await database.update_contact_assign_status(
