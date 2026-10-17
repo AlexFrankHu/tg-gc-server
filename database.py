@@ -125,6 +125,18 @@ async def get_restricted_accounts_by_node(node_id: str) -> list[dict]:
             return await cur.fetchall()
 
 
+async def get_blocked_online_accounts_by_node(node_id: str) -> list[dict]:
+    """Restricted or frozen accounts of a node whose status is online."""
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT * FROM tg_telethon_account WHERE node_id = %s AND (is_restricted = 1 OR is_frozen = 1) "
+                "AND status = 'online' AND is_deleted = 0",
+                (node_id,),
+            )
+            return await cur.fetchall()
+
+
 async def get_account_by_phone(phone: str) -> dict | None:
     """Get a single account by phone number."""
     async with pool.acquire() as conn:
