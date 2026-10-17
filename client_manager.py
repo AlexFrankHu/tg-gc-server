@@ -12,10 +12,11 @@ import asyncio
 import logging
 import random
 import sqlite3
-from telethon import TelegramClient, events
+from telethon import TelegramClient, events, functions
 from telethon.errors import (
     SessionPasswordNeededError, PhoneCodeInvalidError,
     AuthKeyUnregisteredError, UserDeactivatedBanError,
+    SessionRevokedError, UserDeactivatedError,
 )
 
 import config
@@ -30,6 +31,13 @@ logger = logging.getLogger(__name__)
 
 # Active clients: phone -> TelegramClient
 active_clients: dict[str, TelegramClient] = {}
+
+# Telegram invalidated the session (key unregistered / revoked / account deleted
+# or banned). Such a session never comes back, so retrying the login is useless.
+DEAD_SESSION_ERRORS = (
+    AuthKeyUnregisteredError, SessionRevokedError,
+    UserDeactivatedError, UserDeactivatedBanError,
+)
 
 
 def _get_account_dir(phone: str) -> str:
@@ -517,6 +525,7 @@ async def login_account_by_phone(phone: str, use_proxy: bool = True) -> dict:
                 phone=phone, result="failed", reason="Session未授权",
                 proxy_info=proxy_info, node_id=node_id
             )
+            await _mark_session_dead(phone)
             return {"phone": phone, "success": False, "error": "Session not authorized"}
 
         try:
@@ -573,7 +582,7 @@ async def login_account_by_phone(phone: str, use_proxy: bool = True) -> dict:
 
         return {"phone": phone, "success": True, "nickname": nickname}
 
-    except (AuthKeyUnregisteredError, UserDeactivatedBanError) as e:
+    except DEAD_SESSION_ERRORS as e:
         active_clients.pop(phone, None)
         try:
             await client.disconnect()
@@ -584,6 +593,7 @@ async def login_account_by_phone(phone: str, use_proxy: bool = True) -> dict:
             phone=phone, result="banned", reason=str(e),
             node_id=node_id
         )
+        await _mark_session_dead(phone)
         return {"phone": phone, "success": False, "error": f"Banned: {e}"}
     except Exception as e:
         active_clients.pop(phone, None)
@@ -598,6 +608,16 @@ async def login_account_by_phone(phone: str, use_proxy: bool = True) -> dict:
         )
         logger.error(f"[{phone}] Login failed: {e}")
         return {"phone": phone, "success": False, "error": str(e)}
+
+
+async def _mark_session_dead(phone: str):
+    """Login proved the session is dead: mark the account restricted
+    (is_restricted=1) so batch logins stop retrying it."""
+    account = await database.get_account_by_phone(phone)
+    if not account or account.get("is_restricted"):
+        return
+    await database.mark_account_restricted(account["id"], phone)
+    logger.warning(f"[{phone}] Session已失效, 已标记 is_restricted=1, 批量登录不再重试")
 
 
 def _parse_proxy(account: dict) -> dict:
@@ -696,6 +716,74 @@ async def handle_disconnected_account(phone: str):
             pass
     await database.update_account_status(phone, "offline")
     logger.warning(f"[{phone}] 请求时检测到连接已断开, 已从在线列表移除并置为离线")
+
+
+async def restricted_health_check_loop():
+    """Background task: restricted/frozen accounts stay connected but no poll
+    touches them, so check their connections here and set dead ones offline."""
+    while True:
+        try:
+            await asyncio.sleep(config.RESTRICTED_HEALTH_CHECK_INTERVAL)
+            await _check_restricted_clients()
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.error(f"Restricted health check error: {e}")
+
+
+async def _drop_client(phone: str):
+    client = active_clients.pop(phone, None)
+    if client:
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
+    await database.update_account_status(phone, "offline")
+
+
+async def _check_restricted_clients():
+    """For every restricted/frozen account of this node shown as online:
+    - no client or client disconnected -> offline
+    - Telegram answers with a dead-session error -> offline
+    Timeouts and other errors are treated as transient and only logged."""
+    node_id = node_manager.NODE_ID
+    accounts = await database.get_blocked_online_accounts_by_node(node_id)
+    if not accounts:
+        return
+
+    disconnected = dead = 0
+    for acc in accounts:
+        phone = acc.get("phone")
+        if not phone:
+            continue
+        client = active_clients.get(phone)
+        if client is None or not client.is_connected():
+            await _drop_client(phone)
+            disconnected += 1
+            logger.warning(f"[{phone}] 受限账号健康检查: 连接已断开, 已置为离线")
+            continue
+        try:
+            await asyncio.wait_for(
+                client(functions.updates.GetStateRequest()),
+                timeout=config.RESTRICTED_HEALTH_CHECK_TIMEOUT,
+            )
+        except DEAD_SESSION_ERRORS as e:
+            await _drop_client(phone)
+            await database.insert_login_log(
+                phone=phone, result="failed",
+                reason=f"受限账号健康检查: Session已失效({type(e).__name__})",
+                node_id=node_id,
+            )
+            dead += 1
+            logger.warning(f"[{phone}] 受限账号健康检查: Session已失效({e}), 已置为离线")
+        except asyncio.TimeoutError:
+            logger.info(f"[{phone}] 受限账号健康检查超时({config.RESTRICTED_HEALTH_CHECK_TIMEOUT}s), 本轮跳过")
+        except Exception as e:
+            logger.info(f"[{phone}] 受限账号健康检查请求失败, 本轮跳过: {e}")
+        await asyncio.sleep(0.2)
+
+    logger.info(f"Restricted health check: {len(accounts)} checked, "
+                f"{disconnected} disconnected, {dead} dead session -> offline")
 
 
 async def disconnect_all():

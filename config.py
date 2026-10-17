@@ -96,6 +96,8 @@ LOGIN_POLL_INTERVAL = 15
 CONTACT_ADDER_INTERVAL = 15
 CONCURRENT_LOGIN_LIMIT = 15  # max concurrent logins at a time
 LOGIN_TIMEOUT = 60  # seconds, per-account login timeout
+RESTRICTED_HEALTH_CHECK_INTERVAL = int(os.getenv("RESTRICTED_HEALTH_CHECK_INTERVAL", "600"))  # seconds
+RESTRICTED_HEALTH_CHECK_TIMEOUT = 30  # seconds, per-account check request
 
 # Paths
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))

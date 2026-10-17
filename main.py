@@ -68,12 +68,14 @@ async def lifespan(app: FastAPI):
     account_task_task = asyncio.create_task(account_task.poll_account_tasks())
     sync_task = asyncio.create_task(_periodic_sync())
     log_cleanup_task = asyncio.create_task(_log_cleanup_loop())
+    health_check_task = asyncio.create_task(client_manager.restricted_health_check_loop())
 
     yield
 
     # Cancel all tasks
     for task in [heartbeat_task, login_poll_task, logout_poll_task, auto_reply_task,
-                 contact_adder_task, account_task_task, sync_task, restart_task, log_cleanup_task]:
+                 contact_adder_task, account_task_task, sync_task, restart_task, log_cleanup_task,
+                 health_check_task]:
         task.cancel()
         try:
             await task
